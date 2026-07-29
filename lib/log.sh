@@ -2,7 +2,10 @@
 # lib/log.sh — logging por nível, rotação diária, fallback gracioso, redação de segredos.
 # Depende de lib/color.sh (color::init deve já ter rodado) e lib/bootstrap.sh (pvx::invocation_id).
 
-declare -gA PVX_LOG_LEVELS=([trace]=10 [debug]=20 [info]=30 [warn]=40 [error]=50 [fatal]=60 [silent]=99)
+# separado em duas instruções de propósito — ver o comentário equivalente em lib/paths.sh
+# (bash 4.2 tem um bug real com `declare -gA VAR=(literal)` dentro de função).
+declare -gA PVX_LOG_LEVELS
+PVX_LOG_LEVELS=([trace]=10 [debug]=20 [info]=30 [warn]=40 [error]=50 [fatal]=60 [silent]=99)
 
 PVX_LOG_LEVEL=${PVX_LOG_LEVEL:-30}            # threshold do console
 PVX_LOG_FILE_LEVEL=${PVX_LOG_FILE_LEVEL:-20}  # threshold do arquivo — sempre mais verboso

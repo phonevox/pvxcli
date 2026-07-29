@@ -314,7 +314,12 @@ registry::index_names_path() { printf '%s/index.names' "$PVX_CACHE_DIR"; }
 
 registry::_file_age_seconds() {
   local file=$1 mtime now
-  mtime=$(stat -f '%m' "$file" 2>/dev/null) || mtime=$(stat -c '%Y' "$file" 2>/dev/null) || return 1
+  # -c (GNU/Linux) primeiro: no BSD/macOS "stat -c" simplesmente falha (opção desconhecida) e
+  # cai limpo pro fallback -f. Na ordem invertida, o GNU `stat -f` NÃO dá erro de opção — ele
+  # interpreta o formato como um segundo caminho de arquivo, imprime info de filesystem (lixo)
+  # pro stdout antes de falhar no caminho inexistente, e esse lixo vaza pra dentro do mesmo
+  # $(...) junto com o valor certo do fallback. Reproduzido de verdade num container Linux.
+  mtime=$(stat -c '%Y' "$file" 2>/dev/null) || mtime=$(stat -f '%m' "$file" 2>/dev/null) || return 1
   printf -v now '%(%s)T' -1
   printf '%s' "$((now - mtime))"
 }

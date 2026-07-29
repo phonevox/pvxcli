@@ -91,7 +91,10 @@ assert_flush
 # --- mysql_defaults_file: nunca expõe a senha via argv, arquivo fica 0600 ---
 f=$(exec::mysql_defaults_file root 'senha123')
 test_15_mysql_defaults_cria() { assert_file 'mysql_defaults_file cria o arquivo' "$f"; }
-perm=$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null)
+# -c (GNU/Linux) primeiro — na ordem invertida, o "stat -f" do GNU não dá erro de opção
+# desconhecida, e sim vaza uma info de filesystem (lixo) pro stdout antes de falhar, que
+# fica misturado com o valor certo do fallback dentro do mesmo $(...).
+perm=$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)
 test_16_mysql_defaults_permissao() { assert_eq 'mysql_defaults_file cria com permissão 600' 600 "$perm"; }
 conteudo_mysql=$(cat "$f")
 test_17_mysql_defaults_usuario() { assert_contains 'arquivo de defaults tem o usuário' "$conteudo_mysql" 'user=root'; }

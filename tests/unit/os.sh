@@ -39,8 +39,26 @@ test_06_uma_familia_apenas() {
 }
 assert_flush
 
-test_07_is_container_falso() { assert_false 'is_container é falso rodando direto no host' os::is_container; }
-test_08_is_root_falso() { assert_false 'is_root é falso rodando como usuário normal' os::is_root; }
+# is_container/is_root dependem do ambiente de verdade (host vs container, root vs não) —
+# não dá pra fixar um valor esperado (rodar isto dentro de um container, ex: pra testar no
+# bash 4.2 do CentOS, torna "sempre falso" uma asserção errada, não uma regressão). Em vez
+# disso, confere CONSISTÊNCIA com um sinal independente: EUID de verdade pro root, e a mesma
+# checagem de /.dockerenv que os::is_container usa internamente (é a evidência real
+# disponível, não dá pra verificar "é container" sem reproduzir o próprio sinal).
+test_07_is_container_consistente() {
+  if [[ -e /.dockerenv ]] || [[ -e /run/.containerenv ]]; then
+    assert_true 'is_container detecta container quando /.dockerenv (ou equivalente) existe' os::is_container
+  else
+    assert_false 'is_container é falso quando não há sinal de container' os::is_container
+  fi
+}
+test_08_is_root_consistente() {
+  if ((EUID == 0)); then
+    assert_true 'is_root é verdadeiro quando EUID=0' os::is_root
+  else
+    assert_false 'is_root é falso quando EUID != 0' os::is_root
+  fi
+}
 assert_flush
 
 test_09_selinux_state() { assert_ne 'selinux_state sempre devolve algo (mesmo "disabled")' '' "$(os::selinux_state)"; }

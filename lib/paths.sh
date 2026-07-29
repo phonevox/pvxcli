@@ -3,7 +3,15 @@
 # em vez de 40 constantes soltas. Iterável, sobrescrevível por /etc/pvx/pvx.conf por site, e
 # testável (PVX_ROOT_PREFIX prefixa tudo, permitindo apontar pra uma árvore fixture em testes).
 
-declare -gA PVX_PATH=(
+# bash 4.2 (piso do projeto, ex: CentOS 7) tem um bug real: `declare -gA VAR=(literal)` — o
+# declare e a inicialização na MESMA instrução — não promove o literal pro array global
+# quando isso roda dentro de uma função (é sempre o caso aqui: lib/bootstrap.sh's
+# pvx::require faz `source` de cada lib de dentro da própria função). O array fica
+# GLOBAL mas VAZIO, silenciosamente (sem erro nenhum) — só bash >= 4.3 corrigiu isso. Corrigido
+# separando `declare -gA VAR` (vazio) de `VAR=(literal)` (atribuição comum, sem `declare`),
+# que funciona em qualquer versão. Reproduzido de verdade num container bash 4.2.46 (CentOS 7).
+declare -gA PVX_PATH
+PVX_PATH=(
   [asterisk_etc]=/etc/asterisk               [asterisk_lib]=/var/lib/asterisk
   [asterisk_spool]=/var/spool/asterisk        [asterisk_monitor]=/var/spool/asterisk/monitor
   [asterisk_log]=/var/log/asterisk            [asterisk_agi]=/var/lib/asterisk/agi-bin
@@ -22,7 +30,8 @@ declare -gA PVX_PATH=(
   [pvx_lock]=/var/lock/pvx.lock
 )
 
-declare -gA PVX_PATH_CANDIDATES=(
+declare -gA PVX_PATH_CANDIDATES
+PVX_PATH_CANDIDATES=(
   [issabel_web]='/var/www/html/issabel|/var/www/html'
   [mysql_cnf]='/etc/my.cnf|/etc/mysql/my.cnf|/etc/my.cnf.d/server.cnf'
 )

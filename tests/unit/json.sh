@@ -214,10 +214,12 @@ json::flatten_cached "$fixture_json" "$cache_flat"
 test_41_flatten_cached_cria_arquivo() {
   assert_file 'flatten_cached cria o arquivo flat' "$cache_flat"
 }
-mtime1=$(stat -f '%m' "$cache_flat" 2>/dev/null || stat -c '%Y' "$cache_flat" 2>/dev/null)
+# -c (GNU/Linux) primeiro — ver o comentário equivalente em lib/registry.sh
+# (registry::_file_age_seconds) sobre por que a ordem importa de verdade.
+mtime1=$(stat -c '%Y' "$cache_flat" 2>/dev/null || stat -f '%m' "$cache_flat" 2>/dev/null)
 sleep 1
 json::flatten_cached "$fixture_json" "$cache_flat"
-mtime2=$(stat -f '%m' "$cache_flat" 2>/dev/null || stat -c '%Y' "$cache_flat" 2>/dev/null)
+mtime2=$(stat -c '%Y' "$cache_flat" 2>/dev/null || stat -f '%m' "$cache_flat" 2>/dev/null)
 test_42_flatten_cached_nao_regenera() {
   assert_eq 'flatten_cached não regenera se o fonte não mudou' "$mtime1" "$mtime2"
 }
