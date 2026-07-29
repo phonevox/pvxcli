@@ -171,54 +171,96 @@ fi
 # diretas (pass/fail), o resumo por teste é o que importa. Cor da linha-resumo é sempre a do
 # próprio tests/run (PVX_C daqui), nunca a do processo filho — assim não importa se o teste em
 # si carrega lib/color.sh ou deixa o modo de cor em "never" antes de sair.
-declare -i total=${#RUN_PATHS[@]} passed=0 failed=0
+declare -i total=${#RUN_PATHS[@]} passed=0 failed=0 crashed_incomplete=0
+declare -i assert_ok_total=0 assert_all_total=0
 declare -a FAILED_LABELS=()
+
+declare -a RESULT_LINES=()
 
 for ((i = 0; i < total; i++)); do
   label="${RUN_CATS[i]}/${RUN_NAMES[i]}"
   rc=0
   output=$("$BASH" "${RUN_PATHS[i]}" 2>&1) || rc=$?
   stripped=$(color::strip "$output")
-  counts=$(printf '%s\n' "$stripped" | grep -E '[0-9]+/[0-9]+ passaram' | tail -n1) || true
-  counts=$(menu::_trim "${counts:-}")
 
-  if (( rc == 0 )); then
-    passed+=1
-    printf '  %sok%s      %-24s %s\n' "${PVX_C[ok]:-}" "${PVX_C[reset]:-}" "$label" "$counts"
-  else
-    failed+=1
-    FAILED_LABELS+=("$label")
-    printf '  %sFALHOU%s  %-24s %s\n' "${PVX_C[error]:-}" "${PVX_C[reset]:-}" "$label" "$counts"
-  fi
+  printf '\n%s── %s ──%s\n' "${PVX_C[cyan]:-}" "$label" "${PVX_C[reset]:-}"
 
   # expande as asserções individuais (linhas "ok - ..."/"FALHOU - ..." do tests/lib/assert.sh),
   # recoloridas com as cores do próprio tests/run — ignora ruído do teste (logs, prints de
   # debug etc.), já que só essas linhas têm o formato exato de assert_pass/assert_fail.
-  assertions=$(printf '%s\n' "$stripped" | grep -E '^  (ok|FALHOU) - ') || true
+  assertions=$(printf '%s\n' "$stripped" | grep -E '^  (ok|FALHOU|CRASH) - ') || true
+  declare -i n_ok=0 n_fail=0 n_crash=0
   if [[ -n $assertions ]]; then
     while IFS= read -r assertion_line; do
       if [[ $assertion_line == '  ok - '* ]]; then
-        printf '      %sok%s - %s\n' "${PVX_C[ok]:-}" "${PVX_C[reset]:-}" "${assertion_line#'  ok - '}"
+        n_ok=$((n_ok + 1))
+        printf '  %sok%s - %s\n' "${PVX_C[ok]:-}" "${PVX_C[reset]:-}" "${assertion_line#'  ok - '}"
+      elif [[ $assertion_line == '  CRASH - '* ]]; then
+        n_crash=$((n_crash + 1))
+        printf '  %sCRASH%s - %s\n' "${PVX_C[error]:-}" "${PVX_C[reset]:-}" "${assertion_line#'  CRASH - '}"
       else
-        printf '      %sFALHOU%s - %s\n' "${PVX_C[error]:-}" "${PVX_C[reset]:-}" "${assertion_line#'  FALHOU - '}"
+        n_fail=$((n_fail + 1))
+        printf '  %sFALHOU%s - %s\n' "${PVX_C[error]:-}" "${PVX_C[reset]:-}" "${assertion_line#'  FALHOU - '}"
       fi
     done <<<"$assertions"
   fi
+  n_total=$((n_ok + n_fail + n_crash))
+  assert_ok_total=$((assert_ok_total + n_ok))
+  assert_all_total=$((assert_all_total + n_total))
 
-  # em caso de falha sem sinal de nenhuma asserção capturada, o teste provavelmente quebrou
-  # antes de rodar qualquer assert_* (erro de sintaxe, set -e, etc.) — mostra a saída crua
-  # como último recurso pra diagnosticar.
-  if (( rc != 0 )) && [[ -z $assertions ]]; then
-    printf '%s\n' "$output" | sed 's/^/      /'
+  if (( rc == 0 )); then
+    passed+=1
+    printf '%s%d/%d passaram%s\n' "${PVX_C[ok]:-}" "$n_ok" "$n_total" "${PVX_C[reset]:-}"
+    RESULT_LINES+=("$(printf '  %sok%s      %-24s %d/%d passaram' \
+      "${PVX_C[ok]:-}" "${PVX_C[reset]:-}" "$label" "$n_ok" "$n_total")")
+  else
+    failed+=1
+    FAILED_LABELS+=("$label")
+    if (( n_fail > 0 || n_crash > 0 )); then
+      printf '%s%d/%d passaram (%d falharam, %d crasharam)%s\n' \
+        "${PVX_C[error]:-}" "$n_ok" "$n_total" "$n_fail" "$n_crash" "${PVX_C[reset]:-}"
+    elif (( n_total > 0 )); then
+      # todas as asserções capturadas passaram, mas o processo saiu com erro mesmo assim —
+      # ou seja, crashou DEPOIS da última asserção (set -e, sinal, etc.) antes de chegar no
+      # assert_summary. Não é "tudo passou": a suite não terminou, e o que viria depois do
+      # ponto do crash nunca foi executado — nunca reporta isso como se fosse sucesso.
+      crashed_incomplete+=1
+      printf '%ssuite crashou (código %d) após %d/%d asserções passarem — execução incompleta%s\n' \
+        "${PVX_C[error]:-}" "$rc" "$n_ok" "$n_total" "${PVX_C[reset]:-}"
+      printf '%s\n' "$output" | tail -n 20 | sed 's/^/  /'
+    else
+      # nenhuma asserção capturada => o teste provavelmente quebrou antes de rodar qualquer
+      # assert_* (erro de sintaxe, set -e, etc.) — mostra a saída crua como diagnóstico.
+      printf '%sprocesso saiu com código %d, nenhuma asserção capturada%s\n' \
+        "${PVX_C[error]:-}" "$rc" "${PVX_C[reset]:-}"
+      printf '%s\n' "$output" | sed 's/^/  /'
+    fi
+    if (( n_fail > 0 )); then
+      RESULT_LINES+=("$(printf '  %sFALHOU%s  %-24s %d/%d passaram' \
+        "${PVX_C[error]:-}" "${PVX_C[reset]:-}" "$label" "$n_ok" "$n_total")")
+    else
+      RESULT_LINES+=("$(printf '  %sFALHOU%s  %-24s crashou (código %d) após %d/%d' \
+        "${PVX_C[error]:-}" "${PVX_C[reset]:-}" "$label" "$rc" "$n_ok" "$n_total")")
+    fi
   fi
 done
 
-printf '\n%s%s%s\n' "${PVX_C[bold]:-}" '── resumo ──' "${PVX_C[reset]:-}"
+declare -i assert_fail_total=$((assert_all_total - assert_ok_total))
+
+printf '\n%s── resumo ──%s\n' "${PVX_C[bold]:-}" "${PVX_C[reset]:-}"
+printf '%s\n' "${RESULT_LINES[@]}"
+printf '\n'
 if (( failed > 0 )); then
-  printf '%s%d/%d testes passaram (%d FALHARAM)%s\n' \
-    "${PVX_C[error]:-}" "$passed" "$total" "$failed" "${PVX_C[reset]:-}"
+  if (( crashed_incomplete > 0 )); then
+    printf '%s%d/%d testes passaram (%d testes falharam, %d suite(s) crashada(s) — contagem incompleta)%s\n' \
+      "${PVX_C[error]:-}" "$assert_ok_total" "$assert_all_total" "$assert_fail_total" \
+      "$crashed_incomplete" "${PVX_C[reset]:-}"
+  else
+    printf '%s%d/%d testes passaram (%d testes falharam)%s\n' \
+      "${PVX_C[error]:-}" "$assert_ok_total" "$assert_all_total" "$assert_fail_total" "${PVX_C[reset]:-}"
+  fi
   printf '  falharam: %s\n' "${FAILED_LABELS[*]}"
   exit 1
 fi
-printf '%s%d/%d testes passaram%s\n' "${PVX_C[ok]:-}" "$passed" "$total" "${PVX_C[reset]:-}"
+printf '%s%d/%d testes passaram%s\n' "${PVX_C[ok]:-}" "$assert_ok_total" "$assert_all_total" "${PVX_C[reset]:-}"
 exit 0

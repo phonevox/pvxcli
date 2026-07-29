@@ -21,17 +21,50 @@ export PVX_LOG_DIR=$LOGDIR
 log::init
 log::set_level trace
 
-for lvl in trace debug info warn error fatal silent 5 99; do
-  log::set_level "$lvl"
-  assert_eq "set_level $lvl não quebra o script (regressão: fórmula com && no fim)" \
-    0 0
-done
+test_01_set_level_trace() {
+  log::set_level trace
+  assert_eq "set_level trace não quebra o script (regressão: fórmula com && no fim)" 0 0
+}
+test_02_set_level_debug() {
+  log::set_level debug
+  assert_eq "set_level debug não quebra o script (regressão: fórmula com && no fim)" 0 0
+}
+test_03_set_level_info() {
+  log::set_level info
+  assert_eq "set_level info não quebra o script (regressão: fórmula com && no fim)" 0 0
+}
+test_04_set_level_warn() {
+  log::set_level warn
+  assert_eq "set_level warn não quebra o script (regressão: fórmula com && no fim)" 0 0
+}
+test_05_set_level_error() {
+  log::set_level error
+  assert_eq "set_level error não quebra o script (regressão: fórmula com && no fim)" 0 0
+}
+test_06_set_level_fatal() {
+  log::set_level fatal
+  assert_eq "set_level fatal não quebra o script (regressão: fórmula com && no fim)" 0 0
+}
+test_07_set_level_silent() {
+  log::set_level silent
+  assert_eq "set_level silent não quebra o script (regressão: fórmula com && no fim)" 0 0
+}
+test_08_set_level_5() {
+  log::set_level 5
+  assert_eq "set_level 5 não quebra o script (regressão: fórmula com && no fim)" 0 0
+}
+test_09_set_level_99() {
+  log::set_level 99
+  assert_eq "set_level 99 não quebra o script (regressão: fórmula com && no fim)" 0 0
+}
+assert_flush
 log::set_level info
 
 for lvl in trace debug info warn error; do
   log::set_level "$lvl" --file
 done
-assert_pass 'set_level --file para todos os níveis não quebra'
+test_10_set_level_file_todos_niveis() { assert_pass 'set_level --file para todos os níveis não quebra'; }
+assert_flush
 
 # o loop anterior deixou PVX_LOG_FILE_LEVEL em 'error' (última iteração) — resetar os dois
 # níveis explicitamente, senão info/warn não alcançam o arquivo e os asserts abaixo falham.
@@ -42,31 +75,36 @@ log::info 'linha de info'
 log::warn 'linha de warn'
 log::error 'linha de error'
 file=$(log::file_path)
-assert_file 'arquivo de log foi criado' "$file"
+test_11_arquivo_criado() { assert_file 'arquivo de log foi criado' "$file"; }
 conteudo=$(cat "$file")
-assert_contains 'arquivo contém a linha de info' "$conteudo" 'linha de info'
-assert_contains 'arquivo contém a linha de warn' "$conteudo" 'linha de warn'
-assert_contains 'arquivo contém a linha de error' "$conteudo" 'linha de error'
-assert_contains 'linhas do arquivo têm o contexto testctx' "$conteudo" 'testctx: linha de info'
+test_12_arquivo_contem_info() { assert_contains 'arquivo contém a linha de info' "$conteudo" 'linha de info'; }
+test_13_arquivo_contem_warn() { assert_contains 'arquivo contém a linha de warn' "$conteudo" 'linha de warn'; }
+test_14_arquivo_contem_error() { assert_contains 'arquivo contém a linha de error' "$conteudo" 'linha de error'; }
+test_15_arquivo_contem_contexto() { assert_contains 'linhas do arquivo têm o contexto testctx' "$conteudo" 'testctx: linha de info'; }
+assert_flush
 
 log::add_secret ''
-assert_pass 'add_secret com string vazia não quebra (regressão)'
+test_16_add_secret_vazio() { assert_pass 'add_secret com string vazia não quebra (regressão)'; }
 log::add_secret 's3nh4'
 log::error 'senha=s3nh4 --token abcXYZ falhou -p123456 também'
 conteudo2=$(cat "$file")
-assert_not_contains 'segredo registrado é redigido no arquivo' "$conteudo2" 's3nh4'
-assert_contains 'padrão --token <valor> (separado por espaço) é redigido' "$conteudo2" '--token ***'
-assert_contains 'padrão -p<valor> é redigido' "$conteudo2" '-p***'
+test_17_segredo_redigido() { assert_not_contains 'segredo registrado é redigido no arquivo' "$conteudo2" 's3nh4'; }
+test_18_token_redigido() { assert_contains 'padrão --token <valor> (separado por espaço) é redigido' "$conteudo2" '--token ***'; }
+test_19_p_redigido() { assert_contains 'padrão -p<valor> é redigido' "$conteudo2" '-p***'; }
+assert_flush
 
 log::rotate
-assert_pass 'rotate não quebra'
+test_20_rotate() { assert_pass 'rotate não quebra'; }
+assert_flush
 
 log::raw ''
 log::raw 'linha crua'
-assert_pass 'raw com vazio e não-vazio não quebra'
+test_21_raw() { assert_pass 'raw com vazio e não-vazio não quebra'; }
+assert_flush
 
 log::hint 'dica de teste'
-assert_pass 'hint não quebra'
+test_22_hint() { assert_pass 'hint não quebra'; }
+assert_flush
 
 
 # is_enabled é um OR entre console e arquivo — pra testar "debug desabilitado" de verdade,
@@ -74,8 +112,9 @@ assert_pass 'hint não quebra'
 log::set_level info
 log::set_level error --file
 
-assert_false 'is_enabled debug é falso com nível info (console)' log::is_enabled debug
-assert_true 'is_enabled error é verdadeiro' log::is_enabled error
+test_23_is_enabled_debug_falso() { assert_false 'is_enabled debug é falso com nível info (console)' log::is_enabled debug; }
+test_24_is_enabled_error_verdadeiro() { assert_true 'is_enabled error é verdadeiro' log::is_enabled error; }
+assert_flush
 
 log::set_level trace --file # baixa o threshold do arquivo de novo pro teste de log::tail abaixo
 
@@ -107,8 +146,9 @@ kill "$tail_pid" 2>/dev/null || true
 wait "$tail_pid" 2>/dev/null || true
 pkill -f "tail -n 20 -F $LOGDIR" 2>/dev/null || true
 tail_out=$(cat "$tail_out_file")
-assert_contains 'log::tail mostra linha do componente dummy' "$tail_out" 'primeira linha do dummy'
-assert_contains 'log::tail mostra a segunda linha do dummy' "$tail_out" 'segunda linha do dummy'
-assert_not_contains 'log::tail NÃO mostra linha de outro componente' "$tail_out" 'subsistema modules'
+test_25_tail_mostra_dummy_1() { assert_contains 'log::tail mostra linha do componente dummy' "$tail_out" 'primeira linha do dummy'; }
+test_26_tail_mostra_dummy_2() { assert_contains 'log::tail mostra a segunda linha do dummy' "$tail_out" 'segunda linha do dummy'; }
+test_27_tail_nao_mostra_outro() { assert_not_contains 'log::tail NÃO mostra linha de outro componente' "$tail_out" 'subsistema modules'; }
+assert_flush
 
 assert_summary

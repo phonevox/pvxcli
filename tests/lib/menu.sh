@@ -13,7 +13,7 @@
 # que a seleção final esteja vazia por escolha do usuário.
 #
 # Sem TTY em stdin/stdout (ex: chamado a partir de um pipe) cai pro modo texto: lista os itens
-# numerados e lê uma linha por vez (números pra alternar, "a" p/ todos, vazio/"ok" confirma,
+# numerados e lê uma linha por vez (números pra alternar, "a" p/ todos, vazio/"ok" confirma, 
 # "q" cancela) — útil também pra testar o próprio runner sem terminal interativo.
 menu::checklist() {
   local title=$1
