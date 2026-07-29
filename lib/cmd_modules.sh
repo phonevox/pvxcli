@@ -13,10 +13,20 @@ subcomandos:
   install --file <tarball>      instala um módulo a partir de um tarball local (sem rede)
   install [--sha256 H] --file F idem, com verificação de checksum explícita
   install <nome>[,<nome>...]    instala via registry remoto (baixa e verifica o tarball)
+  install <url-git> [--ref R]   instala direto de um repositório git, sem passar pelo registry
   update [<nome>|--all]         atualiza módulo(s) instalado(s) pra versão mais nova do registry
   remove <nome> [--purge]       remove um módulo (--purge também apaga o state próprio dele)
   help <nome>                   mostra a ajuda do módulo (--help do próprio entrypoint)
 EOF
+}
+
+# modules::_is_git_url <string> — heurística: termina em .git (cobre https://.../repo.git e
+# o atalho scp-like git@host:org/repo.git), ou usa esquema git://.
+modules::_is_git_url() {
+  case $1 in
+    *.git | git://*) return 0 ;;
+  esac
+  return 1
 }
 
 core::cmd_modules() {
@@ -91,7 +101,7 @@ modules::cmd_list() {
 # --- install ------------------------------------------------------------------------------
 modules::cmd_install() {
   pvx::require registry json exec os net integrity
-  local file='' force=0 expected_sha=''
+  local file='' force=0 expected_sha='' ref=''
   local -a names=()
   while (($#)); do
     case $1 in
@@ -110,6 +120,10 @@ modules::cmd_install() {
         ;;
       --sha256)
         expected_sha=${2:?--sha256 requer um valor}
+        shift 2
+        ;;
+      --ref)
+        ref=${2:?--ref requer um valor (tag, branch ou commit)}
         shift 2
         ;;
       --)
@@ -134,6 +148,17 @@ modules::cmd_install() {
   if [[ -n $file ]]; then
     modules::install_from_file "$file" "$force" "$expected_sha"
     return $?
+  fi
+
+  # instalação direta via URL git, sem passar pelo registry — só faz sentido com um único
+  # alvo (misturar isso com uma lista de nomes de registry seria ambíguo).
+  if ((${#names[@]} == 1)) && modules::_is_git_url "${names[0]}"; then
+    modules::_install_from_git "${names[0]}" "$ref" "$force"
+    return $?
+  fi
+  if [[ -n $ref ]]; then
+    log::error 'install: --ref só faz sentido junto de uma URL git'
+    return "$PVX_EXIT_USAGE"
   fi
 
   if ((${#names[@]} == 0)); then
@@ -238,12 +263,74 @@ modules::_install_one_from_registry() {
     return 8
   fi
 
+  if json::get "$flat" ".modules[$idx].git.url" >/dev/null 2>&1; then
+    local git_url git_ref
+    git_url=$(json::get "$flat" ".modules[$idx].git.url")
+    git_ref=$(json::get_def "$flat" ".modules[$idx].git.ref" '')
+    modules::_install_from_git "$git_url" "$git_ref" "$force" registry
+    return $?
+  fi
+
   local url sha dl_file
   url=$(json::get "$flat" ".modules[$idx].tarball.url")
   sha=$(json::get "$flat" ".modules[$idx].tarball.sha256")
   dl_file=$(net::fetch_to_cache "$url" "$PVX_CACHE_DIR/downloads" "$name") || return 4
 
   modules::install_from_file "$dl_file" "$force" "$sha" registry "$url"
+}
+
+# modules::_git_clone_staging <url> [ref] — clona (shallow) e valida; deixa o resultado em
+# $_MODULES_STAGING, o commit resolvido (se disponível) em $_MODULES_GIT_SHA, e a tier de
+# verificação em $_MODULES_GIT_VERIFIED ("pinned" se <ref> já é um commit SHA completo de 40
+# hex — imutável por natureza —, "ref" caso contrário, já que tag/branch podem ser movidos
+# sem aviso pelo mantenedor do módulo, ao contrário de um sha256 de tarball).
+modules::_git_clone_staging() {
+  local url=$1 ref=${2:-}
+
+  if ! command -v git >/dev/null 2>&1; then
+    log::error 'git não encontrado — não é possível instalar módulos via git'
+    return 4
+  fi
+
+  local staging_root staging
+  staging_root=$(pvx::tmpdir)/modules-staging
+  mkdir -p "$staging_root"
+  staging="$staging_root/git.$$"
+  rm -rf "$staging"
+
+  local -a clone_args=(--depth 1 --quiet)
+  [[ -n $ref ]] && clone_args+=(--branch "$ref")
+  if ! git clone "${clone_args[@]}" "$url" "$staging" >/dev/null 2>&1; then
+    log::error 'falha ao clonar %s%s' "$url" "${ref:+ (ref: $ref)}"
+    return 4
+  fi
+
+  _MODULES_GIT_SHA=$(git -C "$staging" rev-parse HEAD 2>/dev/null) || _MODULES_GIT_SHA=''
+  rm -rf "$staging/.git"
+
+  if [[ $ref =~ ^[0-9a-f]{40}$ ]]; then
+    _MODULES_GIT_VERIFIED=pinned
+  else
+    _MODULES_GIT_VERIFIED=ref
+  fi
+
+  registry::validate_module_json "$staging/module.json" || return 6
+  integrity::verify_sha256sums_dir "$staging" || return $?
+
+  _MODULES_STAGING=$staging
+  return 0
+}
+
+# modules::_install_from_git <url> [ref] [force] [origin=git] — instala direto de um
+# repositório git (clonado via modules::_git_clone_staging), reaproveitando o mesmo caminho
+# de publicação de modules::install_from_file (modules::_publish_staging).
+modules::_install_from_git() {
+  local url=$1 ref=${2:-} force=${3:-0} origin=${4:-git}
+  modules::_git_clone_staging "$url" "$ref" || return $?
+  local source_ref=$url
+  [[ -n $_MODULES_GIT_SHA ]] && source_ref="$url#$_MODULES_GIT_SHA"
+  modules::_publish_staging "$_MODULES_STAGING" "$force" "$origin" "$source_ref" \
+    "$_MODULES_GIT_VERIFIED" "$_MODULES_GIT_SHA"
 }
 
 # modules::_extract_and_validate <tarball> — pré-scan de segurança + exige 1 único diretório
@@ -303,7 +390,17 @@ modules::install_from_file() {
   fi
 
   modules::_extract_and_validate "$tarball" || return $?
-  local staging=$_MODULES_STAGING
+  modules::_publish_staging "$_MODULES_STAGING" "$force" "$origin" "$source_ref" "$verified" "$actual_sha"
+}
+
+# modules::_publish_staging <staging> <force> <origin> <source_ref> <verified> <content_sha>
+# Publica um diretório de staging já validado (extraído de tarball OU clonado do git) como
+# módulo instalado: copia config_files, roda o hook install, move pro destino final, cria o
+# symlink de despacho, grava o registro em installed.db. Compartilhado entre
+# modules::install_from_file e modules::_install_from_git — nenhuma das duas etapas daqui
+# pra frente é específica de tarball ou de git.
+modules::_publish_staging() {
+  local staging=$1 force=${2:-0} origin=$3 source_ref=$4 verified=$5 content_sha=${6:-}
 
   local flat name command version entrypoint state_dir_flag
   flat=$(pvx::tmpdir)/install.$$.flat
@@ -400,7 +497,7 @@ modules::install_from_file() {
   local files_count
   files_count=$(wc -l <"$meta_dir/files.list" | tr -d ' ')
 
-  registry::state_add_record "$name" "$version" "$command" "$origin" "$source_ref" "$actual_sha" \
+  registry::state_add_record "$name" "$version" "$command" "$origin" "$source_ref" "$content_sha" \
     "$verified" "$PVX_VERSION" "$files_count"
 
   log::info 'módulo %s (%s) instalado com sucesso — comando: pvx %s' "$name" "$version" "$command"
@@ -464,10 +561,20 @@ modules::_update_one() {
     return 0
   fi
 
-  local url sha command
+  local command
+  command=$(registry::state_get "$name" command)
+
+  if json::get "$flat" ".modules[$idx].git.url" >/dev/null 2>&1; then
+    local git_url git_ref
+    git_url=$(json::get "$flat" ".modules[$idx].git.url")
+    git_ref=$(json::get_def "$flat" ".modules[$idx].git.ref" '')
+    modules::_apply_update_git "$name" "$command" "$cur_ver" "$new_ver" "$git_url" "$git_ref"
+    return $?
+  fi
+
+  local url sha
   url=$(json::get "$flat" ".modules[$idx].tarball.url")
   sha=$(json::get "$flat" ".modules[$idx].tarball.sha256")
-  command=$(registry::state_get "$name" command)
 
   local dl_file
   dl_file=$(net::fetch_to_cache "$url" "$PVX_CACHE_DIR/downloads" "atualização de $name") || return 4
@@ -476,8 +583,6 @@ modules::_update_one() {
 }
 
 # modules::_apply_update <nome> <comando> <versão-atual> <versão-nova> <tarball> <sha256-esperado>
-# Publica com staging + rollback: se qualquer etapa falhar depois de mover o diretório antigo
-# pra um caminho de rollback, o antigo é restaurado — nunca fica sem nenhuma versão publicada.
 modules::_apply_update() {
   local name=$1 command=$2 old_ver=$3 new_ver=$4 tarball=$5 expected_sha=${6:-}
 
@@ -490,7 +595,30 @@ modules::_apply_update() {
   fi
 
   modules::_extract_and_validate "$tarball" || return $?
-  local staging=$_MODULES_STAGING
+  modules::_apply_update_from_staging "$name" "$command" "$old_ver" "$new_ver" "$_MODULES_STAGING" \
+    registry "$tarball" index "$actual_sha"
+}
+
+# modules::_apply_update_git <nome> <comando> <versão-atual> <versão-nova> <url-git> [ref]
+modules::_apply_update_git() {
+  local name=$1 command=$2 old_ver=$3 new_ver=$4 url=$5 ref=${6:-}
+
+  modules::_git_clone_staging "$url" "$ref" || return $?
+  local source_ref=$url
+  [[ -n $_MODULES_GIT_SHA ]] && source_ref="$url#$_MODULES_GIT_SHA"
+
+  modules::_apply_update_from_staging "$name" "$command" "$old_ver" "$new_ver" "$_MODULES_STAGING" \
+    git "$source_ref" "$_MODULES_GIT_VERIFIED" "$_MODULES_GIT_SHA"
+}
+
+# modules::_apply_update_from_staging <nome> <comando> <ver-antiga> <ver-nova> <staging>
+#   <origin> <source_ref> <verified> <content_sha>
+# Publica com staging + rollback: se qualquer etapa falhar depois de mover o diretório antigo
+# pra um caminho de rollback, o antigo é restaurado — nunca fica sem nenhuma versão publicada.
+# Compartilhado entre modules::_apply_update (tarball) e modules::_apply_update_git.
+modules::_apply_update_from_staging() {
+  local name=$1 command=$2 old_ver=$3 new_ver=$4 staging=$5
+  local origin=$6 source_ref=$7 verified=$8 content_sha=${9:-}
 
   local flat entrypoint hook_update
   flat=$(pvx::tmpdir)/update.$$.flat
@@ -532,12 +660,12 @@ modules::_apply_update() {
   cp "$module_dir/module.json" "$meta_dir/module.json"
   (cd "$module_dir" && find . -type f) >"$meta_dir/files.list"
   [[ -r "$module_dir/SHA256SUMS" ]] && cp "$module_dir/SHA256SUMS" "$meta_dir/SHA256SUMS"
-  printf 'registry\n%s\n' "$tarball" >"$meta_dir/origin"
+  printf '%s\n%s\n' "$origin" "$source_ref" >"$meta_dir/origin"
 
   local files_count
   files_count=$(wc -l <"$meta_dir/files.list" | tr -d ' ')
-  registry::state_add_record "$name" "$new_ver" "$command" registry "$tarball" "$actual_sha" \
-    index "$PVX_VERSION" "$files_count"
+  registry::state_add_record "$name" "$new_ver" "$command" "$origin" "$source_ref" "$content_sha" \
+    "$verified" "$PVX_VERSION" "$files_count"
 
   log::info 'módulo %s atualizado: %s -> %s' "$name" "$old_ver" "$new_ver"
   return 0
