@@ -20,7 +20,7 @@ _pvx_completions() {
   cur=${cur:-${COMP_WORDS[COMP_CWORD]}}
   prev=${prev:-${COMP_WORDS[COMP_CWORD - 1]:-}}
 
-  local core_cmds='modules sysinfo completion help version'
+  local core_cmds='modules registry sysinfo completion help version'
   local global_opts='-h --help -V --version -v --verbose -q --quiet --debug --trace
     --log-level= --color= --no-color -n --dry-run -y --yes --offline --config'
 
@@ -74,6 +74,13 @@ _pvx_completions() {
         help)
           COMPREPLY=($(compgen -W "$installed_names" -- "$cur"))
           ;;
+        *) ;;
+      esac
+      ;;
+    registry)
+      case ${COMP_WORDS[2]:-} in
+        refresh) COMPREPLY=($(compgen -W '--force' -- "$cur")) ;;
+        '') COMPREPLY=($(compgen -W 'status list refresh set' -- "$cur")) ;;
         *) ;;
       esac
       ;;

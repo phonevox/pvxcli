@@ -65,6 +65,7 @@ declare -gA PVX_CORE_CMDS=(
   [version]='core/version:core::cmd_version'
   [modules]='cmd_modules:core::cmd_modules'
   [completion]='core/completion:core::cmd_completion'
+  [registry]='core/registry:core::cmd_registry'
   [doctor]='core/reserved:core::cmd_reserved'
   [config]='core/reserved:core::cmd_reserved'
   [cache]='core/reserved:core::cmd_reserved'
@@ -226,6 +227,7 @@ pvx::_load_config() {
       offline) [[ $v == true || $v == 1 ]] && PVX_OFFLINE=1 ;;
       auto_sudo) [[ $v == true || $v == 1 ]] && PVX_AUTO_SUDO=1 ;;
       tui) PVX_TUI=$v ;;
+      registry_url) PVX_REGISTRY_URL=$v ;;
     esac
   done <"$file"
   return 0
@@ -241,6 +243,7 @@ uso: pvx [opções globais] <comando> [args...]
 
 comandos:
   modules     gerencia módulos instaláveis (list/install/remove/update/help)
+  registry    consulta/configura o índice remoto de módulos (status/list/refresh/set)
   sysinfo     dump read-only de informações do sistema, ponto de partida de debugging
   completion  gera/instala o script de autocomplete do bash
   help        mostra esta ajuda ou --help de um comando

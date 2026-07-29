@@ -364,4 +364,35 @@ test_50_help_version_nao_roda() {
 }
 assert_flush
 
+# ============================================================================================
+# 26+. `pvx registry status/list/refresh/set` — reaproveita o PVX_REGISTRY_URL já exportado
+# acima (aponta pro index.json real gerado por make-index.sh, já na versão 0.1.1 do dummy
+# depois do bloco de update).
+# ============================================================================================
+rc=0
+out=$(pvx registry status 2>&1) || rc=$?
+test_51_registry_status_rc() { assert_eq '26. pvx registry status retorna rc=0' 0 "$rc"; }
+test_52_registry_status_mostra_url() { assert_contains '26. pvx registry status mostra a URL configurada' "$out" "$PVX_REGISTRY_URL"; }
+test_53_registry_status_mostra_modulos() { assert_contains '26. pvx registry status mostra "1 disponível"' "$out" '1 disponível'; }
+assert_flush
+
+rc=0
+out=$(pvx registry list 2>&1) || rc=$?
+test_54_registry_list_rc() { assert_eq '27. pvx registry list retorna rc=0' 0 "$rc"; }
+test_55_registry_list_mostra_dummy() { assert_contains '27. pvx registry list mostra o dummy' "$out" 'dummy'; }
+test_56_registry_list_mostra_versao() { assert_contains '27. pvx registry list mostra a versão 0.1.1' "$out" '0.1.1'; }
+assert_flush
+
+rc=0
+out=$(pvx registry refresh --force 2>&1) || rc=$?
+test_57_registry_refresh_rc() { assert_eq '28. pvx registry refresh --force retorna rc=0' 0 "$rc"; }
+test_58_registry_refresh_conteudo() { assert_contains '28. pvx registry refresh --force reporta módulo(s) disponível(is)' "$out" 'disponível'; }
+assert_flush
+
+# --- 29. registry set: rejeita URL com esquema desconhecido, sem precisar de root pra isso ---
+rc=0
+out=$(pvx registry set ftp://exemplo.com 2>&1) || rc=$?
+test_59_registry_set_rejeita_esquema() { assert_ne '29. registry set rejeita esquema desconhecido (ftp://)' 0 "$rc"; }
+assert_flush
+
 assert_summary
