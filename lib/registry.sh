@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# lib/registry.sh — estado local de módulos instalados (installed.db) e validação de
-# module.json. A leitura/escrita do índice REMOTO (registry/index.json, registry::refresh)
-# fica pra quando o registry de teste existir de verdade — ver Task #9.
+# lib/registry.sh — estado local de módulos instalados (installed.db), validação de
+# module.json, e leitura do índice remoto de módulos (registry/index.json ou uma URL de
+# verdade, via cache local em PVX_CACHE_DIR).
 #
 # installed.db: uma linha por módulo instalado, campos separados por "|":
 #   name|version|command|installed_at|origin|source_ref|tarball_sha256|verified|core_version|files_count
@@ -19,21 +19,6 @@ PVX_STATE_DIR=${PVX_STATE_DIR:-${PVX_ROOT_PREFIX:-}/var/lib/pvx}
 PVX_CACHE_DIR=${PVX_CACHE_DIR:-${PVX_ROOT_PREFIX:-}/var/cache/pvx}
 
 _PVX_LOCK_FD=''
-
-# registry::sha256_file <arquivo> — hash criptográfico real (sem fallback não-criptográfico:
-# isto é usado pra VERIFICAÇÃO DE INTEGRIDADE de tarball, ao contrário de json::_hash_file que
-# só invalida cache). Compartilhado por tools/pack-module.sh e lib/cmd_modules.sh.
-registry::sha256_file() {
-  local file=$1
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$file" | awk '{print $1}'
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$file" | awk '{print $1}'
-  else
-    log::error 'nem sha256sum nem shasum disponíveis — não é possível verificar integridade'
-    return 1
-  fi
-}
 
 # --- lock exclusivo (best-effort se `flock` não existir, ex. macOS) ---------------------------
 lock::acquire() {
@@ -315,4 +300,119 @@ registry::module_field() {
   flat=$(pvx::tmpdir)/module_field.$$.flat
   json::flatten_file "$file" >"$flat" 2>/dev/null || return 1
   json::get "$flat" "$field"
+}
+
+# --- índice remoto (registry/index.json) -----------------------------------------------------
+# Aponta pro fixture de teste por padrão — aceita file:// e http(s)://. Uma central real
+# apontaria isso pra uma URL de verdade via /etc/pvx/pvx.conf.
+PVX_REGISTRY_URL=${PVX_REGISTRY_URL:-file://$PVX_ROOT/registry/index.json}
+PVX_REGISTRY_TTL=${PVX_REGISTRY_TTL:-86400}
+
+registry::index_path() { printf '%s/index.json' "$PVX_CACHE_DIR"; }
+registry::index_flat_path() { printf '%s/index.flat' "$PVX_CACHE_DIR"; }
+registry::index_names_path() { printf '%s/index.names' "$PVX_CACHE_DIR"; }
+
+registry::_file_age_seconds() {
+  local file=$1 mtime now
+  mtime=$(stat -f '%m' "$file" 2>/dev/null) || mtime=$(stat -c '%Y' "$file" 2>/dev/null) || return 1
+  printf -v now '%(%s)T' -1
+  printf '%s' "$((now - mtime))"
+}
+
+registry::_rebuild_index_caches() {
+  local idx flat names n i nm
+  idx=$(registry::index_path)
+  flat=$(registry::index_flat_path)
+  names=$(registry::index_names_path)
+  json::flatten_cached "$idx" "$flat" || return 1
+  n=$(json::len "$flat" .modules 2>/dev/null) || n=0
+  : >"$names.tmp"
+  for ((i = 0; i < n; i++)); do
+    nm=$(json::get "$flat" ".modules[$i].name" 2>/dev/null) || continue
+    printf '%s\n' "$nm" >>"$names.tmp"
+  done
+  mv -f "$names.tmp" "$names"
+  return 0
+}
+
+# registry::refresh [--force] — busca o índice remoto (PVX_REGISTRY_URL; aceita file:// e
+# http(s)://), valida que é JSON parseável antes de substituir o cache, e regenera .flat +
+# .names. Nunca falha por estar offline se já houver cache (só avisa que pode estar velho).
+registry::refresh() {
+  local force=0
+  [[ ${1:-} == --force ]] && force=1
+
+  mkdir -p "$PVX_CACHE_DIR" 2>/dev/null || true
+  local idx
+  idx=$(registry::index_path)
+
+  if ((!force)) && [[ -r $idx ]]; then
+    local age
+    age=$(registry::_file_age_seconds "$idx") || age=999999999
+    if ((age < PVX_REGISTRY_TTL)); then
+      registry::_rebuild_index_caches
+      return 0
+    fi
+  fi
+
+  if [[ ${PVX_OFFLINE:-0} == 1 ]]; then
+    if [[ -r $idx ]]; then
+      log::warn 'offline: usando cache do índice de módulos (pode estar desatualizado)'
+      registry::_rebuild_index_caches
+      return 0
+    fi
+    log::error 'offline e sem cache de índice — não é possível continuar'
+    return 4
+  fi
+
+  local tmp="$idx.tmp"
+  if ! net::fetch "$PVX_REGISTRY_URL" "$tmp" 'índice de módulos' 30; then
+    rm -f "$tmp.part" "$tmp"
+    if [[ -r $idx ]]; then
+      log::warn 'usando cache existente do índice de módulos (pode estar desatualizado)'
+      registry::_rebuild_index_caches
+      return 0
+    fi
+    return 4
+  fi
+
+  if ! json::flatten_file "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    if [[ -r $idx ]]; then
+      log::warn 'índice remoto retornou JSON inválido — mantendo cache existente'
+      registry::_rebuild_index_caches
+      return 0
+    fi
+    log::error 'índice remoto retornou um JSON inválido: %s' "$PVX_REGISTRY_URL"
+    return 4
+  fi
+
+  mv -f "$tmp" "$idx"
+  registry::_rebuild_index_caches
+  return 0
+}
+
+registry::list_names() {
+  local names
+  names=$(registry::index_names_path)
+  [[ -r $names ]] && cat "$names"
+  return 0
+}
+
+# registry::lookup <nome> — imprime o índice do módulo no array .modules do índice cacheado;
+# rc=3 se não encontrado ou se ainda não há cache.
+registry::lookup() {
+  local name=$1 flat
+  flat=$(registry::index_flat_path)
+  [[ -r $flat ]] || return 3
+  json::find_idx "$flat" .modules name "$name"
+}
+
+# registry::field <nome> <campo-dotted-relativo-ao-módulo> — ex: registry::field dummy version
+registry::field() {
+  local name=$1 field=$2 flat idx
+  flat=$(registry::index_flat_path)
+  [[ -r $flat ]] || return 3
+  idx=$(registry::lookup "$name") || return 3
+  json::get "$flat" ".modules[$idx].$field"
 }

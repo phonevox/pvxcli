@@ -64,6 +64,7 @@ declare -gA PVX_CORE_CMDS=(
   [help]='core/help:core::cmd_help'
   [version]='core/version:core::cmd_version'
   [modules]='cmd_modules:core::cmd_modules'
+  [completion]='core/completion:core::cmd_completion'
   [doctor]='core/reserved:core::cmd_reserved'
   [config]='core/reserved:core::cmd_reserved'
   [cache]='core/reserved:core::cmd_reserved'

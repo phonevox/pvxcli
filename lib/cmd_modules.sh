@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# lib/cmd_modules.sh — subsistema `pvx modules`. Nesta passada: list (só instalados, sem
-# índice remoto ainda), install --file (local, sem rede), remove, help. `install <nome>` via
-# registry remoto e `update` chegam quando registry/index.json existir de verdade (Task #9).
+# lib/cmd_modules.sh — subsistema `pvx modules`: list, install (--file local e <nome> via
+# registry remoto), update, remove, help.
 
 PVX_MODULES_DIR=${PVX_MODULES_DIR:-${PVX_ROOT_PREFIX:-}/opt/pvx/modules}
 
@@ -10,10 +9,11 @@ modules::_usage() {
 uso: pvx modules <subcomando> [args...]
 
 subcomandos:
-  list                          lista módulos instalados
+  list                          lista módulos instalados e disponíveis no registry
   install --file <tarball>      instala um módulo a partir de um tarball local (sem rede)
   install [--sha256 H] --file F idem, com verificação de checksum explícita
-  install <nome>[,<nome>...]    instala via registry remoto (ainda não disponível nesta versão)
+  install <nome>[,<nome>...]    instala via registry remoto (baixa e verifica o tarball)
+  update [<nome>|--all]         atualiza módulo(s) instalado(s) pra versão mais nova do registry
   remove <nome> [--purge]       remove um módulo (--purge também apaga o state próprio dele)
   help <nome>                   mostra a ajuda do módulo (--help do próprio entrypoint)
 EOF
@@ -25,6 +25,7 @@ core::cmd_modules() {
   case $sub in
     list) modules::cmd_list "$@" ;;
     install) modules::cmd_install "$@" ;;
+    update) modules::cmd_update "$@" ;;
     remove | uninstall) modules::cmd_remove "$@" ;;
     help) modules::cmd_help "$@" ;;
     '' | -h | --help) modules::_usage ;;
@@ -36,28 +37,60 @@ core::cmd_modules() {
   esac
 }
 
-# --- list ---------------------------------------------------------------------------------
+# --- list -------------------------------------------------------------------------------------
 modules::cmd_list() {
-  pvx::require registry
-  local rows
+  pvx::require registry json net
+
+  local -A installed_version=() installed_command=()
+  local rows name version command _rest
   rows=$(registry::state_list)
-  if [[ -z $rows ]]; then
-    printf 'nenhum módulo instalado.\n'
-    printf '(sem cache de índice remoto ainda nesta versão — use "pvx modules install --file <tarball>")\n'
-    return 0
-  fi
-  printf '%-16s %-10s %-10s %s\n' NAME VERSION STATUS COMMAND
-  local name version command _rest
   while IFS='|' read -r name version command _rest; do
     [[ -z $name ]] && continue
-    printf '%-16s %-10s %-10s %s\n' "$name" "$version" installed "$command"
+    installed_version[$name]=$version
+    installed_command[$name]=$command
   done <<<"$rows"
+
+  registry::refresh 2>/dev/null || true
+  local names_from_registry=''
+  names_from_registry=$(registry::list_names 2>/dev/null) || names_from_registry=''
+
+  if [[ -z $names_from_registry && ${#installed_version[@]} -eq 0 ]]; then
+    printf 'nenhum módulo instalado, e o índice remoto está indisponível (sem rede/cache ainda).\n'
+    return 0
+  fi
+
+  printf '%-16s %-10s %-10s %-14s %s\n' NAME INSTALLED AVAILABLE STATUS COMMAND
+  local -A seen=()
+  local n
+  if [[ -n $names_from_registry ]]; then
+    while IFS= read -r n; do
+      [[ -z $n ]] && continue
+      seen[$n]=1
+      local avail status cmd
+      avail=$(registry::field "$n" version 2>/dev/null) || avail='?'
+      cmd=${installed_command[$n]:-$(registry::field "$n" command 2>/dev/null)}
+      if [[ -n ${installed_version[$n]:-} ]]; then
+        if [[ ${installed_version[$n]} == "$avail" ]]; then
+          status=installed
+        else
+          status=outdated
+        fi
+        printf '%-16s %-10s %-10s %-14s %s\n' "$n" "${installed_version[$n]}" "$avail" "$status" "$cmd"
+      else
+        printf '%-16s %-10s %-10s %-14s %s\n' "$n" '-' "$avail" not-installed "$cmd"
+      fi
+    done <<<"$names_from_registry"
+  fi
+  for n in "${!installed_version[@]}"; do
+    [[ -n ${seen[$n]:-} ]] && continue
+    printf '%-16s %-10s %-10s %-14s %s\n' "$n" "${installed_version[$n]}" '-' local "${installed_command[$n]}"
+  done
   return 0
 }
 
-# --- install --------------------------------------------------------------------------------
+# --- install ------------------------------------------------------------------------------
 modules::cmd_install() {
-  pvx::require registry json exec
+  pvx::require registry json exec os net integrity
   local file='' force=0 expected_sha=''
   local -a names=()
   while (($#)); do
@@ -71,6 +104,7 @@ modules::cmd_install() {
         shift
         ;;
       -y | --yes)
+        # shellcheck disable=SC2034 # lido por lib/exec.sh (exec::confirm) mais adiante
         PVX_ASSUME_YES=1
         shift
         ;;
@@ -88,7 +122,10 @@ modules::cmd_install() {
         return "$PVX_EXIT_USAGE"
         ;;
       *)
-        names+=("$1")
+        local IFS=,
+        local -a split
+        read -ra split <<<"$1"
+        names+=("${split[@]}")
         shift
         ;;
     esac
@@ -100,67 +137,124 @@ modules::cmd_install() {
   fi
 
   if ((${#names[@]} == 0)); then
-    log::error 'install: informe --file <tarball> ou um nome de módulo'
-    modules::_usage >&2
-    return "$PVX_EXIT_USAGE"
-  fi
-
-  log::error 'install <nome> via registry remoto ainda não disponível nesta versão (use --file)'
-  return "$PVX_EXIT_UNAVAILABLE"
-}
-
-# Pré-scan de segurança do tar: rejeita caminho absoluto e travessia de diretório ("..").
-modules::_tar_safety_scan() {
-  local tarball=$1 line seg
-  local -a segs
-  while IFS= read -r line; do
-    [[ -z $line ]] && continue
-    if [[ $line == /* ]]; then
-      log::error 'tarball inseguro: entrada com caminho absoluto: %s' "$line"
-      return 11
+    # sem nome nem --file: só faz sentido perguntar interativamente se tem um TTY de verdade
+    # dos dois lados (senão um script/CI ficaria esperando teclado pra sempre) — nesse caso,
+    # mantém o erro de uso de sempre.
+    if [[ ! -t 0 || ! -t 1 ]]; then
+      log::error 'install: informe --file <tarball> ou um nome de módulo'
+      modules::_usage >&2
+      return "$PVX_EXIT_USAGE"
     fi
-    IFS='/' read -ra segs <<<"$line"
-    for seg in "${segs[@]}"; do
-      if [[ $seg == '..' ]]; then
-        log::error 'tarball inseguro: travessia de diretório: %s' "$line"
-        return 11
+
+    pvx::require tui
+    registry::refresh || return 4
+    local -a available=() installed_names=()
+    mapfile -t available < <(registry::list_names 2>/dev/null)
+    if ((${#available[@]} == 0)); then
+      log::error 'install: nenhum módulo disponível no registry (e nenhum nome foi informado)'
+      return 4
+    fi
+    mapfile -t installed_names < <(registry::state_list | awk -F'|' '{print $1}')
+    local -a pickable=() n
+    for n in "${available[@]}"; do
+      if ! printf '%s\n' "${installed_names[@]:-}" | grep -qx "$n"; then
+        pickable+=("$n")
       fi
     done
-  done < <(tar -tzf "$tarball" 2>/dev/null)
+    if ((${#pickable[@]} == 0)); then
+      printf 'todos os módulos do registry já estão instalados.\n'
+      return 0
+    fi
+    if ! tui::checklist 'quais módulos instalar?' "${pickable[@]}"; then
+      printf 'cancelado.\n'
+      return 0
+    fi
+    names=("${TUI_RESULT[@]}")
+    ((${#names[@]} == 0)) && return 0
+  fi
+
+  registry::refresh || return 4
+
+  local name rc=0 any_failed=0
+  for name in "${names[@]}"; do
+    modules::_install_one_from_registry "$name" "$force" || {
+      rc=$?
+      any_failed=1
+    }
+  done
+  ((any_failed)) && return "$rc"
   return 0
 }
 
-modules::_tar_top_dir() {
-  tar -tzf "$1" 2>/dev/null | awk -F/ '{print $1}' | sort -u
+modules::_install_one_from_registry() {
+  local name=$1 force=${2:-0} idx flat
+  flat=$(registry::index_flat_path)
+  if ! idx=$(registry::lookup "$name"); then
+    log::error 'módulo não encontrado no registry: %s' "$name"
+    return 3
+  fi
+
+  # compatibilidade de SO: por capacidade DECLARADA pelo módulo, não allowlist fechada do core.
+  # Lista de famílias vazia = o módulo não se restringe a nenhuma família específica.
+  local n_fam i fam ok_os=1
+  n_fam=$(json::len "$flat" ".modules[$idx].os.families" 2>/dev/null) || n_fam=0
+  if ((n_fam > 0)); then
+    ok_os=0
+    local cur_family
+    cur_family=$(os::family)
+    for ((i = 0; i < n_fam; i++)); do
+      fam=$(json::get "$flat" ".modules[$idx].os.families[$i]")
+      [[ $fam == "$cur_family" ]] && {
+        ok_os=1
+        break
+      }
+    done
+  fi
+  if ((!ok_os)) && ((!force)); then
+    log::error 'módulo %s não declara suporte à família de SO desta central (%s) — use --force pra instalar mesmo assim' \
+      "$name" "$(os::family)"
+    return 8
+  fi
+
+  local requires_core
+  requires_core=$(json::get_def "$flat" ".modules[$idx].requires.pvx_core" '*')
+  if ! version::satisfies "$PVX_VERSION" "$requires_core"; then
+    log::error 'módulo %s requer pvx-core %s (instalado aqui: %s)' "$name" "$requires_core" "$PVX_VERSION"
+    return 8
+  fi
+
+  local n_pkg pkg
+  local -a missing_pkgs=()
+  n_pkg=$(json::len "$flat" ".modules[$idx].requires.packages" 2>/dev/null) || n_pkg=0
+  for ((i = 0; i < n_pkg; i++)); do
+    pkg=$(json::get "$flat" ".modules[$idx].requires.packages[$i]")
+    command -v "$pkg" >/dev/null 2>&1 || missing_pkgs+=("$pkg")
+  done
+  if ((${#missing_pkgs[@]})); then
+    local mgr
+    mgr=$(os::pkg_manager 2>/dev/null) || mgr='<gerenciador de pacotes>'
+    log::error 'módulo %s precisa de pacotes ausentes: %s (tente: %s install %s)' \
+      "$name" "${missing_pkgs[*]}" "$mgr" "${missing_pkgs[*]}"
+    return 8
+  fi
+
+  local url sha dl_file
+  url=$(json::get "$flat" ".modules[$idx].tarball.url")
+  sha=$(json::get "$flat" ".modules[$idx].tarball.sha256")
+  dl_file=$(net::fetch_to_cache "$url" "$PVX_CACHE_DIR/downloads" "$name") || return 4
+
+  modules::install_from_file "$dl_file" "$force" "$sha" registry "$url"
 }
 
-# modules::install_from_file <tarball> [force] [sha256_esperado]
-modules::install_from_file() {
-  local tarball=$1 force=${2:-0} expected_sha=${3:-}
-
-  if [[ ! -r $tarball ]]; then
-    log::error 'arquivo não encontrado ou sem permissão de leitura: %s' "$tarball"
-    return 1
-  fi
-
-  local actual_sha verified=manifest
-  actual_sha=$(registry::sha256_file "$tarball") || return 1
-
-  if [[ -n $expected_sha ]]; then
-    if [[ $actual_sha != "$expected_sha" ]]; then
-      log::error 'checksum não confere: esperado %s, obtido %s' "$expected_sha" "$actual_sha"
-      return 5
-    fi
-    verified=pinned
-  else
-    log::warn 'sem --sha256 explícito; verificação limitada ao manifesto interno do tarball (sha256=%s)' \
-      "$actual_sha"
-  fi
-
-  modules::_tar_safety_scan "$tarball" || return $?
+# modules::_extract_and_validate <tarball> — pré-scan de segurança + exige 1 único diretório
+# de topo + extrai em staging + valida module.json + confere SHA256SUMS interno (se houver).
+# Caminho do staging extraído fica em $_MODULES_STAGING no sucesso.
+modules::_extract_and_validate() {
+  local tarball=$1
+  integrity::tar_safety_scan "$tarball" || return $?
 
   local top_dirs top_count
-  top_dirs=$(modules::_tar_top_dir "$tarball")
+  top_dirs=$(integrity::tar_top_dir "$tarball")
   top_count=$(printf '%s\n' "$top_dirs" | grep -c .)
   if ((top_count != 1)); then
     log::error 'tarball deve ter exatamente 1 diretório de topo (encontrado %d)' "$top_count"
@@ -177,30 +271,43 @@ modules::install_from_file() {
     return 1
   fi
 
-  local module_json="$staging/module.json"
-  registry::validate_module_json "$module_json" || return 6
+  registry::validate_module_json "$staging/module.json" || return 6
+  integrity::verify_sha256sums_dir "$staging" || return $?
 
-  if [[ -r "$staging/SHA256SUMS" ]]; then
-    local sums_ok=0
-    (
-      cd "$staging" || exit 1
-      if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum -c SHA256SUMS
-      else
-        shasum -a 256 -c SHA256SUMS
-      fi
-    ) >/dev/null 2>&1 && sums_ok=1
-    if ((!sums_ok)); then
-      log::error 'SHA256SUMS interno do módulo não confere após extração'
+  _MODULES_STAGING=$staging
+  return 0
+}
+
+# modules::install_from_file <tarball> [force] [sha256_esperado] [origin] [source_ref]
+modules::install_from_file() {
+  local tarball=$1 force=${2:-0} expected_sha=${3:-} origin=${4:-file}
+  local source_ref=${5:-$tarball}
+
+  if [[ ! -r $tarball ]]; then
+    log::error 'arquivo não encontrado ou sem permissão de leitura: %s' "$tarball"
+    return 1
+  fi
+
+  local actual_sha verified=manifest
+  actual_sha=$(integrity::sha256_file "$tarball") || return 1
+
+  if [[ -n $expected_sha ]]; then
+    if [[ $actual_sha != "$expected_sha" ]]; then
+      log::error 'checksum não confere: esperado %s, obtido %s' "$expected_sha" "$actual_sha"
       return 5
     fi
+    verified=$([[ $origin == registry ]] && printf 'index' || printf 'pinned')
   else
-    log::warn 'tarball não tem SHA256SUMS interno — pulando verificação pós-extração'
+    log::warn 'sem checksum esperado; verificação limitada ao manifesto interno do tarball (sha256=%s)' \
+      "$actual_sha"
   fi
+
+  modules::_extract_and_validate "$tarball" || return $?
+  local staging=$_MODULES_STAGING
 
   local flat name command version entrypoint state_dir_flag
   flat=$(pvx::tmpdir)/install.$$.flat
-  json::flatten_file "$module_json" >"$flat"
+  json::flatten_file "$staging/module.json" >"$flat"
   name=$(json::get "$flat" .name)
   command=$(json::get "$flat" .command)
   version=$(json::get "$flat" .version)
@@ -288,15 +395,151 @@ modules::install_from_file() {
   cp "$final_dir/module.json" "$meta_dir/module.json"
   (cd "$final_dir" && find . -type f) >"$meta_dir/files.list"
   [[ -r "$final_dir/SHA256SUMS" ]] && cp "$final_dir/SHA256SUMS" "$meta_dir/SHA256SUMS"
-  printf 'file\n%s\n' "$tarball" >"$meta_dir/origin"
+  printf '%s\n%s\n' "$origin" "$source_ref" >"$meta_dir/origin"
 
   local files_count
   files_count=$(wc -l <"$meta_dir/files.list" | tr -d ' ')
 
-  registry::state_add_record "$name" "$version" "$command" file "$tarball" "$actual_sha" \
+  registry::state_add_record "$name" "$version" "$command" "$origin" "$source_ref" "$actual_sha" \
     "$verified" "$PVX_VERSION" "$files_count"
 
   log::info 'módulo %s (%s) instalado com sucesso — comando: pvx %s' "$name" "$version" "$command"
+  return 0
+}
+
+# --- update -------------------------------------------------------------------------------
+modules::cmd_update() {
+  pvx::require registry json exec net integrity
+  local target=${1:-}
+
+  registry::refresh || return 4
+
+  local -a to_update=()
+  if [[ -z $target || $target == --all ]]; then
+    local rows name
+    rows=$(registry::state_list)
+    while IFS='|' read -r name _rest; do
+      [[ -z $name ]] && continue
+      to_update+=("$name")
+    done <<<"$rows"
+    if ((${#to_update[@]} == 0)); then
+      log::info 'nenhum módulo instalado — nada pra atualizar'
+      return 0
+    fi
+  else
+    to_update=("$target")
+  fi
+
+  local name rc=0 any_failed=0
+  for name in "${to_update[@]}"; do
+    modules::_update_one "$name" || {
+      rc=$?
+      any_failed=1
+    }
+  done
+  ((any_failed)) && return "$rc"
+  return 0
+}
+
+modules::_update_one() {
+  local name=$1
+  if ! registry::state_is_installed "$name"; then
+    log::error 'módulo não instalado: %s' "$name"
+    return 1
+  fi
+
+  local idx
+  if ! idx=$(registry::lookup "$name"); then
+    log::warn 'módulo %s instalado localmente, mas ausente do registry — pulando update' "$name"
+    return 0
+  fi
+
+  local flat cur_ver new_ver cmp
+  flat=$(registry::index_flat_path)
+  cur_ver=$(registry::state_get "$name" version)
+  new_ver=$(json::get "$flat" ".modules[$idx].version")
+  cmp=$(version::cmp "$new_ver" "$cur_ver")
+  if [[ $cmp != 1 ]]; then
+    log::info 'módulo %s já está na versão mais recente disponível (%s)' "$name" "$cur_ver"
+    return 0
+  fi
+
+  local url sha command
+  url=$(json::get "$flat" ".modules[$idx].tarball.url")
+  sha=$(json::get "$flat" ".modules[$idx].tarball.sha256")
+  command=$(registry::state_get "$name" command)
+
+  local dl_file
+  dl_file=$(net::fetch_to_cache "$url" "$PVX_CACHE_DIR/downloads" "atualização de $name") || return 4
+
+  modules::_apply_update "$name" "$command" "$cur_ver" "$new_ver" "$dl_file" "$sha"
+}
+
+# modules::_apply_update <nome> <comando> <versão-atual> <versão-nova> <tarball> <sha256-esperado>
+# Publica com staging + rollback: se qualquer etapa falhar depois de mover o diretório antigo
+# pra um caminho de rollback, o antigo é restaurado — nunca fica sem nenhuma versão publicada.
+modules::_apply_update() {
+  local name=$1 command=$2 old_ver=$3 new_ver=$4 tarball=$5 expected_sha=${6:-}
+
+  local actual_sha
+  actual_sha=$(integrity::sha256_file "$tarball") || return 1
+  if [[ -n $expected_sha && $actual_sha != "$expected_sha" ]]; then
+    log::error 'checksum não confere pro update de %s: esperado %s, obtido %s' \
+      "$name" "$expected_sha" "$actual_sha"
+    return 5
+  fi
+
+  modules::_extract_and_validate "$tarball" || return $?
+  local staging=$_MODULES_STAGING
+
+  local flat entrypoint hook_update
+  flat=$(pvx::tmpdir)/update.$$.flat
+  json::flatten_file "$staging/module.json" >"$flat"
+  entrypoint=$(json::get "$flat" .entrypoint)
+  hook_update=$(json::get_def "$flat" .hooks.update '')
+  chmod +x "$staging/$entrypoint" 2>/dev/null || true
+
+  local module_dir="$PVX_MODULES_DIR/$name"
+  local module_state_dir="$PVX_STATE_DIR/state/$name"
+  local hook_rc=0
+  if [[ -n $hook_update && -x "$staging/$hook_update" ]]; then
+    PVX_ROOT="$PVX_ROOT" PVX_LIB_DIR="$PVX_LIB_DIR" PVX_MODULE_NAME="$name" \
+      PVX_MODULE_VERSION="$new_ver" PVX_MODULE_OLD_VERSION="$old_ver" \
+      PVX_MODULE_DIR="$module_dir" PVX_STATE_DIR="$PVX_STATE_DIR" \
+      PVX_MODULE_STATE_DIR="$module_state_dir" PVX_HOOK=update \
+      PVX_DRY_RUN="${PVX_DRY_RUN:-0}" \
+      "$staging/$hook_update" || hook_rc=$?
+  fi
+  if ((hook_rc != 0)); then
+    log::error 'hook update falhou (rc=%d) — mantendo %s na versão %s' "$hook_rc" "$name" "$old_ver"
+    return 7
+  fi
+
+  local rollback_dir="$module_dir.rollback.$$"
+  [[ -d $module_dir ]] && mv "$module_dir" "$rollback_dir"
+  if ! { mv -T "$staging" "$module_dir" 2>/dev/null || mv "$staging" "$module_dir"; }; then
+    log::error 'falha ao publicar a nova versão de %s — restaurando %s' "$name" "$old_ver"
+    [[ -d $rollback_dir ]] && mv "$rollback_dir" "$module_dir"
+    return 1
+  fi
+  rm -rf "$rollback_dir"
+
+  mkdir -p "$PVX_STATE_DIR/commands"
+  ln -sfn "$module_dir/$entrypoint" "$PVX_STATE_DIR/commands/$command"
+
+  local meta_dir="$PVX_STATE_DIR/modules/$name"
+  mkdir -p "$meta_dir"
+  cp "$module_dir/module.json" "$meta_dir/module.json"
+  (cd "$module_dir" && find . -type f) >"$meta_dir/files.list"
+  [[ -r "$module_dir/SHA256SUMS" ]] && cp "$module_dir/SHA256SUMS" "$meta_dir/SHA256SUMS"
+  printf 'registry\n%s\n' "$tarball" >"$meta_dir/origin"
+
+  local files_count
+  files_count=$(wc -l <"$meta_dir/files.list" | tr -d ' ')
+  registry::state_add_record "$name" "$new_ver" "$command" registry "$tarball" "$actual_sha" \
+    index "$PVX_VERSION" "$files_count"
+
+  log::info 'módulo %s atualizado: %s -> %s' "$name" "$old_ver" "$new_ver"
   return 0
 }
 
@@ -373,7 +616,7 @@ modules::cmd_remove() {
 
 # --- help -----------------------------------------------------------------------------------
 modules::cmd_help() {
-  pvx::require registry
+  pvx::require registry net
   local name=${1:-}
   if [[ -z $name ]]; then
     modules::_usage
@@ -390,6 +633,12 @@ modules::cmd_help() {
     log::error 'módulo %s instalado, mas o entrypoint não é executável: %s' "$name" "$link"
     return 1
   fi
-  log::error 'módulo não instalado: %s (registry remoto ainda não disponível nesta versão)' "$name"
+  registry::refresh 2>/dev/null || true
+  local summary
+  if summary=$(registry::field "$name" summary 2>/dev/null); then
+    printf '%s: %s\n(não instalado — rode "pvx modules install %s" primeiro)\n' "$name" "$summary" "$name"
+    return 0
+  fi
+  log::error 'módulo desconhecido: %s' "$name"
   return 3
 }

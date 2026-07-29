@@ -14,7 +14,7 @@ export PVX_ROOT PVX_LIB_DIR
 # shellcheck source=/dev/null
 source "$PVX_LIB_DIR/bootstrap.sh"
 pvx::install_traps
-pvx::require color log json registry
+pvx::require color log json registry integrity
 color::init
 log::init
 
@@ -50,7 +50,7 @@ rm -rf "$stage/.git"
 (
   cd "$stage"
   while IFS= read -r -d '' f; do
-    printf '%s  %s\n' "$(registry::sha256_file "$f")" "$f"
+    printf '%s  %s\n' "$(integrity::sha256_file "$f")" "$f"
   done < <(find . -type f ! -name SHA256SUMS -print0 | sort -z)
 ) >"$stage/SHA256SUMS"
 
@@ -59,7 +59,7 @@ mkdir -p "$dist_dir"
 tarball="$dist_dir/pvx-mod-$name-$version.tar.gz"
 (cd "$stage_root" && tar -czf "$tarball" "$name-$version")
 
-hash=$(registry::sha256_file "$tarball")
+hash=$(integrity::sha256_file "$tarball")
 printf '%s  %s\n' "$hash" "$(basename "$tarball")" >"$tarball.sha256"
 
 log::info 'gerado: %s (sha256=%s)' "$tarball" "$hash"
