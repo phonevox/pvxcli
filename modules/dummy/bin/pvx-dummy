@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# modules/dummy/bin/pvx-dummy — entrypoint do módulo de teste "dummy". Nunca vendoriza cópia
+# própria de lib — sempre faz `source` da lib compartilhada do pvx-core via PVX_LIB_DIR.
+set -Eeuo pipefail
+
+: "${PVX_LIB_DIR:?PVX_LIB_DIR não definido — este módulo deve ser executado via pvx, não direto}"
+# shellcheck source=/dev/null
+source "$PVX_LIB_DIR/bootstrap.sh"
+pvx::install_traps
+pvx::require color log
+color::init
+log::init
+
+dummy::usage() {
+  cat <<'EOF'
+uso: pvx dummy <ação>
+
+ações:
+  hello    imprime uma saudação
+  status   mostra as variáveis de ambiente recebidas do dispatcher (contrato de módulo)
+EOF
+}
+
+action=${1:-}
+case $action in
+  hello)
+    printf 'dummy %s: hello from %s\n' "${PVX_MODULE_VERSION:-?}" "$(hostname 2>/dev/null || printf '?')"
+    exit 0
+    ;;
+  status)
+    printf 'PVX_ROOT=%s\n' "${PVX_ROOT:-}"
+    printf 'PVX_LIB_DIR=%s\n' "${PVX_LIB_DIR:-}"
+    printf 'PVX_MODULE_NAME=%s\n' "${PVX_MODULE_NAME:-}"
+    printf 'PVX_MODULE_VERSION=%s\n' "${PVX_MODULE_VERSION:-}"
+    printf 'PVX_MODULE_DIR=%s\n' "${PVX_MODULE_DIR:-}"
+    printf 'PVX_STATE_DIR=%s\n' "${PVX_STATE_DIR:-}"
+    printf 'PVX_LOG_CONTEXT=%s\n' "${PVX_LOG_CONTEXT:-}"
+    printf 'PVX_DRY_RUN=%s\n' "${PVX_DRY_RUN:-}"
+    exit 0
+    ;;
+  -h | --help | '')
+    dummy::usage
+    exit 0
+    ;;
+  *)
+    printf 'dummy: ação desconhecida: %s\n' "$action" >&2
+    dummy::usage >&2
+    exit 2
+    ;;
+esac

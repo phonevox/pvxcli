@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "dummy",
+  "command": "dummy",
+  "version": "0.1.0",
+  "summary": "Módulo de teste do esqueleto pvx",
+  "description": "Prova o ciclo install/update/remove e a chamada de hooks, sem lógica real.",
+  "entrypoint": "bin/pvx-dummy",
+  "requires_root": false,
+  "hooks": {
+    "install": "hooks/install",
+    "uninstall": "hooks/uninstall",
+    "update": "hooks/update",
+    "logs": null
+  },
+  "requires": { "pvx_core": ">=0.1.0", "modules": [], "packages": ["bash"] },
+  "os": { "families": ["rhel", "debian"] },
+  "provides": { "actions": ["hello", "status"] },
+  "config_files": [],
+  "state_dir": true
+}
