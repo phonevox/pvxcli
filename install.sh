@@ -11,6 +11,10 @@
 #   PVX_INSTALL_BIN      caminho do symlink de entrada (default /usr/local/bin/pvx)
 set -Eeuo pipefail
 
+# no macOS, evita os arquivos-sidecar "._nome" (AppleDouble) que o `tar` embutiria de outra
+# forma — ver o mesmo comentário em tools/pack-module.sh. Não-op no Linux.
+export COPYFILE_DISABLE=1
+
 if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2))); then
   printf 'pvx: requer bash >= 4.2 (detectado %s)\n' "$BASH_VERSION" >&2
   exit 78

@@ -6,6 +6,12 @@
 # com o diretório de topo dentro do tarball sendo "<nome>-<versão>/".
 set -Eeuo pipefail
 
+# no macOS, `tar`/`cp` embutem arquivos-sidecar "._nome" (AppleDouble, resource fork/xattrs)
+# a menos que isto esteja definido — sem ele, o tarball fica com 2 "diretórios de topo"
+# (ex: "._dummy-0.1.0" ao lado de "dummy-0.1.0/"), que o install do outro lado rejeita
+# (integrity::tar_top_dir exige exatamente 1). Não-op no Linux (a variável não existe lá).
+export COPYFILE_DISABLE=1
+
 _TOOLS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PVX_ROOT=$(cd -P "$_TOOLS_DIR/.." && pwd)
 PVX_LIB_DIR="$PVX_ROOT/lib"

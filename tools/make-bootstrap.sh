@@ -10,6 +10,10 @@
 # install.sh de dentro dele.
 set -Eeuo pipefail
 
+# no macOS, evita os arquivos-sidecar "._nome" (AppleDouble) que o `tar` embutiria de outra
+# forma — ver o mesmo comentário em tools/pack-module.sh. Não-op no Linux.
+export COPYFILE_DISABLE=1
+
 _TOOLS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PVX_ROOT=$(cd -P "$_TOOLS_DIR/.." && pwd)
 
