@@ -40,14 +40,6 @@ name=$(registry::module_field "$module_json" .name)
 version=$(registry::module_field "$module_json" .version)
 log::info 'empacotando módulo %s versão %s' "$name" "$version"
 
-pack::sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1"
-  else
-    shasum -a 256 "$1"
-  fi
-}
-
 stage_root=$(pvx::tmpdir)/pack-stage
 rm -rf "$stage_root"
 stage="$stage_root/$name-$version"
@@ -58,7 +50,7 @@ rm -rf "$stage/.git"
 (
   cd "$stage"
   while IFS= read -r -d '' f; do
-    pack::sha256 "$f"
+    printf '%s  %s\n' "$(registry::sha256_file "$f")" "$f"
   done < <(find . -type f ! -name SHA256SUMS -print0 | sort -z)
 ) >"$stage/SHA256SUMS"
 
@@ -67,7 +59,7 @@ mkdir -p "$dist_dir"
 tarball="$dist_dir/pvx-mod-$name-$version.tar.gz"
 (cd "$stage_root" && tar -czf "$tarball" "$name-$version")
 
-hash=$(pack::sha256 "$tarball" | awk '{print $1}')
+hash=$(registry::sha256_file "$tarball")
 printf '%s  %s\n' "$hash" "$(basename "$tarball")" >"$tarball.sha256"
 
 log::info 'gerado: %s (sha256=%s)' "$tarball" "$hash"

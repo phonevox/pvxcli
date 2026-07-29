@@ -43,8 +43,10 @@ assert_true 'satisfies: <= verdadeiro' version::satisfies 1.0.0 '<=1.0.0'
 assert_true 'satisfies: < verdadeiro' version::satisfies 0.9.0 '<1.0.0'
 
 # --- estado local (installed.db) — isolado numa árvore fixture --------------------------------
-export PVX_ROOT_PREFIX="$(pvx::tmpdir)/fixture_registry"
-mkdir -p "$PVX_ROOT_PREFIX$(path::get pvx_state)"
+# registry.sh usa PVX_STATE_DIR diretamente (mesma variável que bin/pvx exporta e usa pro
+# despacho via symlinks), não path::get — ver comentário no topo de lib/registry.sh.
+export PVX_STATE_DIR="$(pvx::tmpdir)/fixture_registry/var/lib/pvx"
+mkdir -p "$PVX_STATE_DIR"
 
 assert_false 'state_is_installed: falso quando installed.db nem existe ainda' \
   registry::state_is_installed dummy
@@ -74,7 +76,7 @@ assert_true 'state_is_installed: "outro" continua instalado' registry::state_is_
 assert_eq 'state_list: 1 registro após remover "dummy"' 1 \
   "$(registry::state_list | wc -l | tr -d ' ')"
 
-unset PVX_ROOT_PREFIX
+unset PVX_STATE_DIR
 
 # --- validação de module.json -------------------------------------------------------------
 assert_rc 'validate_module_json: aceita o module.json real do dummy' 0 \

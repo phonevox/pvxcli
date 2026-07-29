@@ -2,9 +2,9 @@
 # hooks/update — no-op REAL; também grava PVX_MODULE_OLD_VERSION pra provar que o dispatcher
 # passa a versão antiga corretamente no momento do update.
 set -Eeuo pipefail
-: "${PVX_STATE_DIR:?PVX_STATE_DIR não definido}"
-mkdir -p "$PVX_STATE_DIR"
+: "${PVX_MODULE_STATE_DIR:?PVX_MODULE_STATE_DIR não definido}"
+mkdir -p "$PVX_MODULE_STATE_DIR"
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '?')
 printf 'update %s->%s %s\n' "${PVX_MODULE_OLD_VERSION:-?}" "${PVX_MODULE_VERSION:-?}" "$ts" \
-  >>"$PVX_STATE_DIR/hooks.log"
+  >>"$PVX_MODULE_STATE_DIR/hooks.log"
 exit 0

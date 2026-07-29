@@ -44,7 +44,8 @@ export PVX_VERSION
 : "${PVX_STATE_DIR:=${PVX_ROOT_PREFIX}/var/lib/pvx}"
 : "${PVX_CACHE_DIR:=${PVX_ROOT_PREFIX}/var/cache/pvx}"
 : "${PVX_ETC_DIR:=${PVX_ROOT_PREFIX}/etc/pvx}"
-export PVX_ROOT_PREFIX PVX_STATE_DIR PVX_CACHE_DIR PVX_ETC_DIR
+: "${PVX_MODULES_DIR:=${PVX_ROOT_PREFIX}/opt/pvx/modules}"
+export PVX_ROOT_PREFIX PVX_STATE_DIR PVX_CACHE_DIR PVX_ETC_DIR PVX_MODULES_DIR
 
 PVX_DRY_RUN=${PVX_DRY_RUN:-0}
 PVX_ASSUME_YES=${PVX_ASSUME_YES:-0}
@@ -62,6 +63,7 @@ declare -ga PVX_RESOLVERS=(core::resolve registry::resolve snippet::resolve)
 declare -gA PVX_CORE_CMDS=(
   [help]='core/help:core::cmd_help'
   [version]='core/version:core::cmd_version'
+  [modules]='cmd_modules:core::cmd_modules'
   [doctor]='core/reserved:core::cmd_reserved'
   [config]='core/reserved:core::cmd_reserved'
   [cache]='core/reserved:core::cmd_reserved'
@@ -120,12 +122,70 @@ core::_suggest() {
   return 0
 }
 
-# requires_root ainda não é lido do module.json (json.sh chega numa fase posterior) — stub
-# seguro que nunca exige root até essa peça existir.
-core::_module_requires_root() { return 1; }
+# Resolve o <name> do módulo a partir do symlink de despacho (aponta pra dentro de
+# $PVX_MODULES_DIR/<name>/...) — evita ter que reparsear module.json inteiro só pra achar o
+# próprio nome do módulo.
+core::_module_name_from_cmd() {
+  local cmd=$1 link target
+  link="$PVX_STATE_DIR/commands/$cmd"
+  [[ -L $link ]] || return 1
+  target=$(readlink "$link" 2>/dev/null) || return 1
+  [[ $target == */modules/* ]] || return 1
+  target=${target#*/modules/}
+  printf '%s\n' "${target%%/*}"
+}
 
-# hook opcional `hooks.logs` de um módulo — idem, stub até module.flat existir.
-core::_module_logs_hook() { return 1; }
+# Extrai um campo de string simples (top-level, não aninhado) de um module.json via grep —
+# evita carregar lib/json.sh só pra isso no caminho quente do dispatch de todo comando.
+core::_module_field_grep() {
+  local meta_file=$1 field=$2
+  grep -Eo "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$meta_file" 2>/dev/null | head -1 |
+    sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/'
+}
+
+# Popula PVX_MODULE_{NAME,VERSION,DIR,STATE_DIR} pro contrato de env do módulo — chamado antes
+# de despachar pra um módulo (tanto na invocação normal quanto na ação `logs`).
+core::_module_export_env() {
+  local cmd=$1
+  PVX_MODULE_NAME=$(core::_module_name_from_cmd "$cmd") || PVX_MODULE_NAME=''
+  PVX_MODULE_VERSION=''
+  PVX_MODULE_DIR=''
+  PVX_MODULE_STATE_DIR=''
+  if [[ -n $PVX_MODULE_NAME ]]; then
+    local meta_file="$PVX_STATE_DIR/modules/$PVX_MODULE_NAME/module.json"
+    [[ -r $meta_file ]] && PVX_MODULE_VERSION=$(core::_module_field_grep "$meta_file" version)
+    PVX_MODULE_DIR="$PVX_MODULES_DIR/$PVX_MODULE_NAME"
+    PVX_MODULE_STATE_DIR="$PVX_STATE_DIR/state/$PVX_MODULE_NAME"
+  fi
+  export PVX_MODULE_NAME PVX_MODULE_VERSION PVX_MODULE_DIR PVX_MODULE_STATE_DIR
+  return 0
+}
+
+# Checagem leve via grep (não carrega lib/json.sh — evita o custo de parse só pra um boolean
+# em TODA invocação de comando de módulo). O metadado é a cópia de module.json que
+# lib/cmd_modules.sh grava em $PVX_STATE_DIR/modules/<name>/ no momento da instalação.
+core::_module_requires_root() {
+  local cmd=$1 name meta_file
+  name=$(core::_module_name_from_cmd "$cmd") || return 1
+  meta_file="$PVX_STATE_DIR/modules/$name/module.json"
+  [[ -r $meta_file ]] || return 1
+  grep -Eq '"requires_root"[[:space:]]*:[[:space:]]*true' "$meta_file"
+}
+
+# hook opcional `hooks.logs` de um módulo "serviço" — se declarado no module.json e existir/for
+# executável, o dispatcher chama ele em vez do log::tail genérico.
+core::_module_logs_hook() {
+  local cmd=$1 name meta_file hook_rel hook_path
+  name=$(core::_module_name_from_cmd "$cmd") || return 1
+  meta_file="$PVX_STATE_DIR/modules/$name/module.json"
+  [[ -r $meta_file ]] || return 1
+  hook_rel=$(grep -Eo '"logs"[[:space:]]*:[[:space:]]*"[^"]*"' "$meta_file" 2>/dev/null |
+    sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/') || return 1
+  [[ -n $hook_rel ]] || return 1
+  hook_path="$PVX_MODULES_DIR/$name/$hook_rel"
+  [[ -x $hook_path ]] || return 1
+  printf '%s\n' "$hook_path"
+}
 
 core::_check_root() {
   local cmd=$1 kind=$2 needs=0
@@ -298,6 +358,7 @@ main() {
     local hook=''
     [[ $kind == module ]] && { hook=$(core::_module_logs_hook "$cmd") || hook=''; }
     if [[ -n $hook ]]; then
+      core::_module_export_env "$cmd"
       exec "$hook" ${cmd_args[@]+"${cmd_args[@]:1}"}
     fi
     local logs_rc=0
@@ -316,6 +377,7 @@ main() {
       PVX_LOG_CONTEXT=$saved_ctx
       ;;
     module)
+      core::_module_export_env "$cmd"
       PVX_LOG_CONTEXT=$cmd "$target" "${cmd_args[@]}" && rc=0 || rc=$?
       ;;
     snippet)

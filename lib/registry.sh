@@ -10,7 +10,30 @@
 # Um formato de linha se atualiza com `grep -v` + `mv` atômico e é legível a olho nu no console
 # por um técnico.
 
+# PVX_STATE_DIR/PVX_CACHE_DIR já vêm exportados por bin/pvx (é o mesmo valor que o dispatcher
+# usa pra resolver symlinks em commands/) — usar essa variável diretamente aqui, em vez de
+# path::get pvx_state, garante que cmd_modules.sh (que cria os symlinks) e bin/pvx (que os lê
+# pra despachar) nunca divirjam sobre onde fica o estado. Defaults próprios aqui só pra esta
+# lib funcionar de forma standalone (testes, dev de módulo fora do bin/pvx).
+PVX_STATE_DIR=${PVX_STATE_DIR:-${PVX_ROOT_PREFIX:-}/var/lib/pvx}
+PVX_CACHE_DIR=${PVX_CACHE_DIR:-${PVX_ROOT_PREFIX:-}/var/cache/pvx}
+
 _PVX_LOCK_FD=''
+
+# registry::sha256_file <arquivo> — hash criptográfico real (sem fallback não-criptográfico:
+# isto é usado pra VERIFICAÇÃO DE INTEGRIDADE de tarball, ao contrário de json::_hash_file que
+# só invalida cache). Compartilhado por tools/pack-module.sh e lib/cmd_modules.sh.
+registry::sha256_file() {
+  local file=$1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    log::error 'nem sha256sum nem shasum disponíveis — não é possível verificar integridade'
+    return 1
+  fi
+}
 
 # --- lock exclusivo (best-effort se `flock` não existir, ex. macOS) ---------------------------
 lock::acquire() {
@@ -133,11 +156,11 @@ version::satisfies() {
 
 # --- estado local (installed.db) ---------------------------------------------------------------
 registry::state_db_path() {
-  printf '%s/installed.db' "$(path::get pvx_state)"
+  printf '%s/installed.db' "$PVX_STATE_DIR"
 }
 
 registry::_state_ensure_dir() {
-  mkdir -p "$(path::get pvx_state)" 2>/dev/null || true
+  mkdir -p "$PVX_STATE_DIR" 2>/dev/null || true
   return 0
 }
 

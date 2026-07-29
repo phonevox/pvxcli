@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # hooks/uninstall — no-op REAL, ver comentário em hooks/install.
 set -Eeuo pipefail
-: "${PVX_STATE_DIR:?PVX_STATE_DIR não definido}"
-mkdir -p "$PVX_STATE_DIR"
+: "${PVX_MODULE_STATE_DIR:?PVX_MODULE_STATE_DIR não definido}"
+mkdir -p "$PVX_MODULE_STATE_DIR"
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '?')
-printf 'uninstall %s %s\n' "${PVX_MODULE_VERSION:-?}" "$ts" >>"$PVX_STATE_DIR/hooks.log"
+printf 'uninstall %s %s\n' "${PVX_MODULE_VERSION:-?}" "$ts" >>"$PVX_MODULE_STATE_DIR/hooks.log"
 exit 0

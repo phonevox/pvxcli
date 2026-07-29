@@ -34,6 +34,7 @@ case $action in
     printf 'PVX_MODULE_VERSION=%s\n' "${PVX_MODULE_VERSION:-}"
     printf 'PVX_MODULE_DIR=%s\n' "${PVX_MODULE_DIR:-}"
     printf 'PVX_STATE_DIR=%s\n' "${PVX_STATE_DIR:-}"
+    printf 'PVX_MODULE_STATE_DIR=%s\n' "${PVX_MODULE_STATE_DIR:-}"
     printf 'PVX_LOG_CONTEXT=%s\n' "${PVX_LOG_CONTEXT:-}"
     printf 'PVX_DRY_RUN=%s\n' "${PVX_DRY_RUN:-}"
     exit 0
