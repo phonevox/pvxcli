@@ -350,4 +350,18 @@ test_46_modules_sem_args_rc() { assert_eq '24. pvx modules (sem subcomando) reto
 test_47_modules_sem_args_conteudo() { assert_contains '24. pvx modules (sem subcomando) mostra o uso' "$out" 'uso: pvx modules'; }
 assert_flush
 
+# --- 25. `pvx help <core-cmd>` mostra a ajuda do comando, não roda ele de verdade — cada
+# core::cmd_* precisa tratar -h/--help, senão core::cmd_help's `exec "$0" "$1" --help` só faz
+# o comando ignorar o --help e rodar normal (achado de verdade: "pvx help version" imprimia
+# a versão em vez de mostrar a ajuda dela). ---
+core_version=$(cat "$PVX_ROOT/VERSION" 2>/dev/null) || core_version='0.0.0-dev'
+rc=0
+out=$(pvx help version 2>&1) || rc=$?
+test_48_help_version_rc() { assert_eq '25. pvx help version retorna rc=0' 0 "$rc"; }
+test_49_help_version_mostra_ajuda() { assert_contains '25. pvx help version mostra a ajuda' "$out" 'uso: pvx version'; }
+test_50_help_version_nao_roda() {
+  assert_not_contains '25. pvx help version NÃO só imprime a versão' "$out" "pvx $core_version"
+}
+assert_flush
+
 assert_summary
