@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+# bin/pvx — dispatcher da CLI unificada de suporte técnico Phonevox.
+set -Eeuo pipefail
+shopt -s extglob
+
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  printf 'pvx: requer bash >= 4.2 (detectado %s)\n' "$BASH_VERSION" >&2
+  exit 78
+fi
+
+# --- resolve PVX_ROOT/PVX_LIB_DIR de forma symlink-safe --------------------------------------
+# Funciona a partir de /usr/local/bin/pvx (symlink), /opt/pvx/current/bin/pvx, ou um checkout
+# de desenvolvimento — sem hardcode de caminho absoluto.
+_pvx_resolve_root() {
+  local src=${BASH_SOURCE[0]} dir
+  while [[ -L $src ]]; do
+    dir=$(cd -P "${src%/*}" 2>/dev/null && pwd)
+    src=$(readlink "$src")
+    [[ $src != /* ]] && src="$dir/$src"
+  done
+  PVX_BIN_DIR=$(cd -P "${src%/*}" && pwd)
+  PVX_ROOT=${PVX_BIN_DIR%/*}
+}
+_pvx_resolve_root
+: "${PVX_LIB_DIR:=$PVX_ROOT/lib}"
+export PVX_ROOT PVX_LIB_DIR PVX_BIN_DIR
+
+if [[ ! -r "$PVX_LIB_DIR/bootstrap.sh" ]]; then
+  printf 'pvx: lib ausente: %s/bootstrap.sh (instalação quebrada?)\n' "$PVX_LIB_DIR" >&2
+  exit 78
+fi
+# shellcheck source=/dev/null
+source "$PVX_LIB_DIR/bootstrap.sh"
+pvx::require_bash 4 2
+
+if [[ -r "$PVX_ROOT/VERSION" ]]; then
+  read -r PVX_VERSION <"$PVX_ROOT/VERSION"
+else
+  PVX_VERSION='0.0.0-dev'
+fi
+export PVX_VERSION
+
+: "${PVX_ROOT_PREFIX:=}"
+: "${PVX_STATE_DIR:=${PVX_ROOT_PREFIX}/var/lib/pvx}"
+: "${PVX_CACHE_DIR:=${PVX_ROOT_PREFIX}/var/cache/pvx}"
+: "${PVX_ETC_DIR:=${PVX_ROOT_PREFIX}/etc/pvx}"
+export PVX_ROOT_PREFIX PVX_STATE_DIR PVX_CACHE_DIR PVX_ETC_DIR
+
+PVX_DRY_RUN=${PVX_DRY_RUN:-0}
+PVX_ASSUME_YES=${PVX_ASSUME_YES:-0}
+PVX_OFFLINE=${PVX_OFFLINE:-0}
+PVX_NONINTERACTIVE=${PVX_NONINTERACTIVE:-0}
+export PVX_DRY_RUN PVX_ASSUME_YES PVX_OFFLINE PVX_NONINTERACTIVE
+
+pvx::require color log os paths flags
+pvx::install_traps # já pré-aquece invocation_id/tmpdir num shell não-subshell
+
+# --- resolução de comando: extensível via este array (novo tipo = +1 função) -----------------
+declare -ga PVX_RESOLVERS=(core::resolve registry::resolve snippet::resolve)
+
+# valor "file:function" — lib/core/<file>.sh é sourced sob demanda, só quando o comando roda.
+declare -gA PVX_CORE_CMDS=(
+  [help]='core/help:core::cmd_help'
+  [version]='core/version:core::cmd_version'
+  [doctor]='core/reserved:core::cmd_reserved'
+  [config]='core/reserved:core::cmd_reserved'
+  [cache]='core/reserved:core::cmd_reserved'
+  [paths]='core/reserved:core::cmd_reserved'
+  [log]='core/reserved:core::cmd_reserved'
+  [self-update]='core/reserved:core::cmd_reserved'
+)
+declare -gA PVX_CORE_NEEDS_ROOT=()
+
+core::resolve() {
+  local cmd=$1
+  [[ -n ${PVX_CORE_CMDS[$cmd]:-} ]] || return 1
+  printf 'core:%s\n' "${PVX_CORE_CMDS[$cmd]}"
+}
+
+# Despacho O(1) de módulo instalado: symlink em $PVX_STATE_DIR/commands/<cmd> -> entrypoint.
+# Não depende de lib/registry.sh existir — é só um fato do sistema de arquivos.
+registry::resolve() {
+  local cmd=$1
+  local link="$PVX_STATE_DIR/commands/$cmd"
+  [[ -L $link || -x $link ]] || return 1
+  printf 'module:%s\n' "$link"
+}
+
+# Snippet embutido: arquivo único em share/pvx/snippets/<cmd>.sh, roda in-process (sourced).
+snippet::resolve() {
+  local cmd=$1
+  local f="$PVX_ROOT/share/pvx/snippets/$cmd.sh"
+  [[ -r $f ]] || return 1
+  printf 'snippet:%s\n' "$f"
+}
+
+core::_suggest() {
+  local cmd=$1 c best='' candidates=()
+  candidates+=("${!PVX_CORE_CMDS[@]}")
+  if [[ -d $PVX_STATE_DIR/commands ]]; then
+    for c in "$PVX_STATE_DIR"/commands/*; do
+      [[ -e $c || -L $c ]] && candidates+=("${c##*/}")
+    done
+  fi
+  if [[ -d "$PVX_ROOT/share/pvx/snippets" ]]; then
+    for c in "$PVX_ROOT"/share/pvx/snippets/*.sh; do
+      [[ -e $c ]] || continue
+      c=${c##*/}
+      candidates+=("${c%.sh}")
+    done
+  fi
+  for c in ${candidates[@]+"${candidates[@]}"}; do
+    if [[ $c == "$cmd"* || ( -n $cmd && $c == *"$cmd"* ) ]]; then
+      best=$c
+      break
+    fi
+  done
+  printf 'pvx: comando desconhecido: %s\n' "$cmd" >&2
+  [[ -n $best ]] && printf "você quis dizer '%s'?\\n" "$best" >&2
+  return 0
+}
+
+# requires_root ainda não é lido do module.json (json.sh chega numa fase posterior) — stub
+# seguro que nunca exige root até essa peça existir.
+core::_module_requires_root() { return 1; }
+
+# hook opcional `hooks.logs` de um módulo — idem, stub até module.flat existir.
+core::_module_logs_hook() { return 1; }
+
+core::_check_root() {
+  local cmd=$1 kind=$2 needs=0
+  case $kind in
+    core) [[ -n ${PVX_CORE_NEEDS_ROOT[$cmd]:-} ]] && needs=1 ;;
+    module) core::_module_requires_root "$cmd" && needs=1 ;;
+  esac
+  (( needs )) || return 0
+  if (( EUID != 0 )); then
+    log::error '%s requer privilégios de root (rodando como uid %d)' "$cmd" "$EUID"
+    log::hint "tente: sudo pvx $cmd"
+    exit "$PVX_EXIT_NOPERM"
+  fi
+}
+
+# --- config: parseada, nunca sourced (source de config seria RCE como root) ------------------
+pvx::_load_config() {
+  local file=${PVX_CONFIG_FILE:-$PVX_ETC_DIR/pvx.conf} k v perm
+  [[ -r $file ]] || return 0
+  perm=$(stat -c '%a' "$file" 2>/dev/null) || perm=''
+  if [[ -n $perm && ${perm: -1} =~ [2367] ]]; then
+    log::warn 'config %s é world-writable; ignorando por segurança' "$file"
+    return 0
+  fi
+  while IFS='=' read -r k v; do
+    k=${k%%#*}
+    k=${k//[[:space:]]/}
+    [[ -z $k ]] && continue
+    v=${v%%#*}
+    v=${v#"${v%%[![:space:]]*}"}
+    v=${v%"${v##*[![:space:]]}"}
+    case $k in
+      log_level) log::set_level "$v" ;;
+      log_dir) PVX_LOG_DIR=$v ;;
+      log_retention_days) PVX_LOG_RETENTION_DAYS=$v ;;
+      color) color::set_mode "$v" ;;
+      offline) [[ $v == true || $v == 1 ]] && PVX_OFFLINE=1 ;;
+      auto_sudo) [[ $v == true || $v == 1 ]] && PVX_AUTO_SUDO=1 ;;
+      tui) PVX_TUI=$v ;;
+    esac
+  done <"$file"
+  return 0
+}
+
+pvx::_print_version() {
+  printf 'pvx %s\n' "$PVX_VERSION"
+}
+
+pvx::_print_help() {
+  cat <<'EOF'
+uso: pvx [opções globais] <comando> [args...]
+
+comandos:
+  modules     gerencia módulos instaláveis (list/install/remove/update/help)
+  sysinfo     dump read-only de informações do sistema, ponto de partida de debugging
+  completion  gera/instala o script de autocomplete do bash
+  help        mostra esta ajuda ou --help de um comando
+  version     mostra a versão do pvx
+
+opções globais:
+  -h, --help         mostra esta ajuda
+  -V, --version      mostra a versão
+  -v, --verbose      aumenta verbosidade (equivalente a --log-level=debug)
+  -q, --quiet        reduz verbosidade (equivalente a --log-level=error)
+      --debug        equivalente a --log-level=debug
+      --trace        equivalente a --log-level=trace
+      --log-level=N  define o nível de log do console (trace/debug/info/warn/error)
+      --color=X      auto|always|never
+      --no-color     equivalente a --color=never
+  -n, --dry-run      não executa ações que mutam estado
+  -y, --yes          assume "sim" em confirmações interativas
+      --offline      nunca tenta acesso de rede
+      --config FILE  usa um arquivo de config alternativo
+
+todo comando (core ou módulo instalado) também aceita a ação especial "logs" para
+acompanhar seus logs em tempo real, ex: pvx modules logs
+EOF
+}
+
+main() {
+  local -a argv=("$@")
+  local -a rest=()
+  local i=0 a
+
+  # pré-scan só de --config, pra carregar o arquivo certo antes do resto
+  for ((i = 0; i < ${#argv[@]}; i++)); do
+    if [[ ${argv[i]} == --config && -n ${argv[i+1]:-} ]]; then
+      PVX_CONFIG_FILE=${argv[i+1]}
+      break
+    fi
+  done
+
+  color::init # precisa rodar antes de qualquer color::set_mode (inclusive vindo da config)
+  pvx::_load_config
+  log::init
+
+  i=0
+  while (( i < ${#argv[@]} )); do
+    a=${argv[i]}
+    case $a in
+      -h | --help)
+        pvx::_print_help
+        exit 0
+        ;;
+      -V | --version)
+        pvx::_print_version
+        exit 0
+        ;;
+      -v | --verbose) log::set_level debug ;;
+      -q | --quiet) log::set_level error ;;
+      --debug) log::set_level debug ;;
+      --trace) log::set_level trace ;;
+      --log-level=*) log::set_level "${a#*=}" ;;
+      --color=*) color::set_mode "${a#*=}" ;;
+      --no-color) color::set_mode never ;;
+      -n | --dry-run) PVX_DRY_RUN=1 ;;
+      -y | --yes) PVX_ASSUME_YES=1 ;;
+      --offline) PVX_OFFLINE=1 ;;
+      --config) i=$((i + 1)) ;; # valor já consumido no pré-scan
+      --)
+        i=$((i + 1))
+        while (( i < ${#argv[@]} )); do
+          rest+=("${argv[i]}")
+          i=$((i + 1))
+        done
+        break
+        ;;
+      -*)
+        printf 'pvx: opção global desconhecida: %s\n' "$a" >&2
+        exit "$PVX_EXIT_USAGE"
+        ;;
+      *)
+        while (( i < ${#argv[@]} )); do
+          rest+=("${argv[i]}")
+          i=$((i + 1))
+        done
+        break
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  export PVX_DRY_RUN PVX_ASSUME_YES PVX_OFFLINE
+
+  local cmd=${rest[0]:-}
+  local -a cmd_args=(${rest[@]+"${rest[@]:1}"})
+
+  if [[ -z $cmd ]]; then
+    pvx::_print_help
+    exit 0
+  fi
+  PVX_CURRENT_CMD=$cmd
+
+  local resolver resolved='' kind='' target=''
+  for resolver in "${PVX_RESOLVERS[@]}"; do
+    if resolved=$("$resolver" "$cmd" 2>/dev/null); then
+      kind=${resolved%%:*}
+      target=${resolved#*:}
+      break
+    fi
+  done
+
+  if [[ -z $kind ]]; then
+    core::_suggest "$cmd"
+    exit "$PVX_EXIT_NOTFOUND"
+  fi
+
+  core::_check_root "$cmd" "$kind"
+
+  if [[ ${cmd_args[0]:-} == logs ]]; then
+    local hook=''
+    [[ $kind == module ]] && { hook=$(core::_module_logs_hook "$cmd") || hook=''; }
+    if [[ -n $hook ]]; then
+      exec "$hook" ${cmd_args[@]+"${cmd_args[@]:1}"}
+    fi
+    local logs_rc=0
+    log::tail "$cmd" ${cmd_args[@]+"${cmd_args[@]:1}"} || logs_rc=$?
+    exit "$logs_rc"
+  fi
+
+  local rc=0
+  case $kind in
+    core)
+      local file=${target%%:*} fn=${target#*:}
+      pvx::require "$file"
+      local saved_ctx=$PVX_LOG_CONTEXT
+      PVX_LOG_CONTEXT=$cmd
+      "$fn" "${cmd_args[@]}" && rc=0 || rc=$?
+      PVX_LOG_CONTEXT=$saved_ctx
+      ;;
+    module)
+      PVX_LOG_CONTEXT=$cmd "$target" "${cmd_args[@]}" && rc=0 || rc=$?
+      ;;
+    snippet)
+      # shellcheck source=/dev/null
+      source "$target"
+      local fn2="snippet::${cmd//[^a-zA-Z0-9_]/_}::main"
+      local saved_ctx2=$PVX_LOG_CONTEXT
+      PVX_LOG_CONTEXT=$cmd
+      if declare -F "$fn2" >/dev/null 2>&1; then
+        "$fn2" "${cmd_args[@]}" && rc=0 || rc=$?
+      else
+        log::error 'snippet %s não define %s' "$cmd" "$fn2"
+        rc=70
+      fi
+      PVX_LOG_CONTEXT=$saved_ctx2
+      ;;
+  esac
+
+  log::debug "comando '%s' finalizado rc=%d" "$cmd" "$rc"
+  exit "$rc"
+}
+
+main "$@"

@@ -1,0 +1,8 @@
+# pvx-core usa despacho indireto extensivamente (PVX_RESOLVERS, hooks de módulo chamados por
+# nome de função guardado em variável, pvx::require fazendo source de caminho dinâmico) — o
+# shellcheck não consegue seguir esse fluxo estaticamente e sinaliza falso-positivo de "código
+# inalcançável" (SC2317), "função nunca invocada" (SC2329, versões mais novas do shellcheck) e
+# "variável não usada" (SC2034) em quase todo arquivo. SC2317/SC2329 desabilitados globalmente
+# por serem 100% ruído aqui; SC2034 fica ativo (ainda pega bug real ocasional) e é silenciado
+# pontualmente com comentário quando necessário.
+disable=SC2317,SC2329
