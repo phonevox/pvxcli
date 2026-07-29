@@ -125,7 +125,7 @@ modules::cmd_install() {
         local IFS=,
         local -a split
         read -ra split <<<"$1"
-        names+=("${split[@]}")
+        names+=(${split[@]+"${split[@]}"})
         shift
         ;;
     esac
@@ -169,7 +169,7 @@ modules::cmd_install() {
       printf 'cancelado.\n'
       return 0
     fi
-    names=("${TUI_RESULT[@]}")
+    names=(${TUI_RESULT[@]+"${TUI_RESULT[@]}"})
     ((${#names[@]} == 0)) && return 0
   fi
 

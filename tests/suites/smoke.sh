@@ -304,4 +304,50 @@ test_37_hooks_log_versao_antiga() {
 }
 assert_flush
 
+# ============================================================================================
+# 24+. regressão: dispatch de comando SEM nenhum argumento extra (cmd_args vazio) não pode
+# travar. Bash < 4.4 trata `"${arr[@]}"` sob `set -u` como "variável não associada" quando arr
+# tem ZERO elementos (corrigido só no bash 4.4+) — bin/pvx's main() despachava com
+# `"$fn" "${cmd_args[@]}"` sem o guard `${cmd_args[@]+"${cmd_args[@]}"}`, então QUALQUER
+# comando core/módulo/snippet chamado sem argumento nenhum crashava no bash 4.2 (CentOS 7),
+# mas passava despercebido aqui porque o bash do macOS (Homebrew, >=5.3) já corrigiu isso —
+# reproduzido de verdade só rodando num container bash 4.2 de verdade (ver tools/, task de
+# rodar a suíte na matriz de containers). Testes abaixo cobrem o CENÁRIO relatado
+# ("pvx help"/"pvx sysinfo" sem argumento não rodavam, "pvx sysinfo a" rodava, "pvx help
+# sysinfo" acabava executando o sysinfo em vez de mostrar a ajuda dele).
+# ============================================================================================
+rc=0
+out=$(pvx help 2>&1) || rc=$?
+test_38_help_sem_args_rc() { assert_eq '24. pvx help (sem argumento) retorna rc=0' 0 "$rc"; }
+test_39_help_sem_args_conteudo() { assert_contains '24. pvx help (sem argumento) mostra a ajuda geral' "$out" 'uso: pvx'; }
+assert_flush
+
+rc=0
+out=$(pvx sysinfo 2>&1) || rc=$?
+test_40_sysinfo_sem_args_rc() { assert_eq '24. pvx sysinfo (sem argumento) retorna rc=0' 0 "$rc"; }
+test_41_sysinfo_sem_args_conteudo() { assert_contains '24. pvx sysinfo (sem argumento) roda de verdade' "$out" 'pvx-core'; }
+assert_flush
+
+rc=0
+out=$(pvx sysinfo qualquer-coisa 2>&1) || rc=$?
+test_42_sysinfo_com_arg_rc() { assert_eq '24. pvx sysinfo <arg extra> continua retornando rc=0' 0 "$rc"; }
+assert_flush
+
+rc=0
+out=$(pvx help sysinfo 2>&1) || rc=$?
+test_43_help_sysinfo_rc() { assert_eq '24. pvx help sysinfo retorna rc=0' 0 "$rc"; }
+test_44_help_sysinfo_mostra_ajuda() {
+  assert_contains '24. pvx help sysinfo mostra a ajuda do sysinfo (não o dump completo)' "$out" 'uso: pvx sysinfo'
+}
+test_45_help_sysinfo_nao_roda_dump() {
+  assert_not_contains '24. pvx help sysinfo NÃO roda o dump de verdade' "$out" '== pvx-core =='
+}
+assert_flush
+
+rc=0
+out=$(pvx modules 2>&1) || rc=$?
+test_46_modules_sem_args_rc() { assert_eq '24. pvx modules (sem subcomando) retorna rc=0' 0 "$rc"; }
+test_47_modules_sem_args_conteudo() { assert_contains '24. pvx modules (sem subcomando) mostra o uso' "$out" 'uso: pvx modules'; }
+assert_flush
+
 assert_summary

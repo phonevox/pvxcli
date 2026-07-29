@@ -374,12 +374,12 @@ main() {
       pvx::require "$file"
       local saved_ctx=$PVX_LOG_CONTEXT
       PVX_LOG_CONTEXT=$cmd
-      "$fn" "${cmd_args[@]}" && rc=0 || rc=$?
+      "$fn" ${cmd_args[@]+"${cmd_args[@]}"} && rc=0 || rc=$?
       PVX_LOG_CONTEXT=$saved_ctx
       ;;
     module)
       core::_module_export_env "$cmd"
-      PVX_LOG_CONTEXT=$cmd "$target" "${cmd_args[@]}" && rc=0 || rc=$?
+      PVX_LOG_CONTEXT=$cmd "$target" ${cmd_args[@]+"${cmd_args[@]}"} && rc=0 || rc=$?
       ;;
     snippet)
       # shellcheck source=/dev/null
@@ -388,7 +388,7 @@ main() {
       local saved_ctx2=$PVX_LOG_CONTEXT
       PVX_LOG_CONTEXT=$cmd
       if declare -F "$fn2" >/dev/null 2>&1; then
-        "$fn2" "${cmd_args[@]}" && rc=0 || rc=$?
+        "$fn2" ${cmd_args[@]+"${cmd_args[@]}"} && rc=0 || rc=$?
       else
         log::error 'snippet %s não define %s' "$cmd" "$fn2"
         rc=70

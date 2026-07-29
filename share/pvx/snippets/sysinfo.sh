@@ -8,6 +8,18 @@
 # resto do relatório.
 
 snippet::sysinfo::main() {
+  case ${1:-} in
+    -h | --help)
+      cat <<'EOF'
+uso: pvx sysinfo
+
+dump read-only de informações do sistema (SO, caminhos Issabel/Asterisk, módulos pvx
+instalados, disco) — ponto de partida de debugging. Não muda nada no sistema.
+EOF
+      return 0
+      ;;
+  esac
+
   pvx::require os paths registry snippets
 
   snippets::header 'pvx-core'
