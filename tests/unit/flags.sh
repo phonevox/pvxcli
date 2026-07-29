@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# tests/unit/flags.sh — testa lib/flags.sh isoladamente.
+set -Eeuo pipefail
+
+_TEST_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PVX_ROOT=$(cd -P "$_TEST_DIR/../.." && pwd)
+PVX_LIB_DIR="$PVX_ROOT/lib"
+export PVX_ROOT PVX_LIB_DIR
+
+# shellcheck source=/dev/null
+source "$PVX_LIB_DIR/bootstrap.sh"
+pvx::install_traps
+pvx::require color log flags
+color::init
+export PVX_LOG_DIR="$(pvx::tmpdir)/logtest"
+log::init
+# shellcheck source=/dev/null
+source "$_TEST_DIR/../lib/assert.sh"
+
+# --- bool + valores + bundle de shorts ---
+flag::reset
+flag::add verbose --short v --type bool
+flag::add name --short n --type string --default anon
+flag::add count --short c --type int --min 1 --max 10
+flag::parse -vc5 --name=fulano arquivo1 arquivo2
+assert_eq 'bundle -vc5 seta verbose' 1 "$(flag::get verbose)"
+assert_eq 'bundle -vc5 seta count=5 (valor colado)' 5 "$(flag::get count)"
+assert_eq '--name=valor funciona' fulano "$(flag::get name)"
+assert_eq 'positional 1' arquivo1 "$(flag::arg 0)"
+assert_eq 'positional 2' arquivo2 "$(flag::arg 1)"
+
+# --- --no-x ---
+flag::reset
+flag::add strict --type bool --default 1
+flag::parse --no-strict
+assert_eq '--no-x zera um bool' 0 "$(flag::get strict)"
+
+# --- enum inválido falha ---
+flag::reset
+flag::add nivel --type enum --enum 'baixo|medio|alto'
+assert_rc 'enum inválido retorna erro de uso' "$PVX_EXIT_USAGE" -- flag::parse --nivel=extremo
+
+# --- ipv4/porta/duration ---
+flag::reset
+flag::add ip --type ipv4
+flag::add porta --type port
+flag::add ttl --type duration
+assert_rc 'ipv4 com octeto > 255 é rejeitado' "$PVX_EXIT_USAGE" -- flag::parse --ip=192.168.1.500
+assert_rc 'porta > 65535 é rejeitada' "$PVX_EXIT_USAGE" -- flag::parse --ip=1.2.3.4 --porta=70000
+flag::parse --ip=192.168.1.10 --porta=5060 --ttl=2h
+assert_eq 'ipv4 válido aceito' 192.168.1.10 "$(flag::get ip)"
+assert_eq 'porta válida aceita' 5060 "$(flag::get porta)"
+assert_eq 'duration 2h vira 7200 segundos' 7200 "$(flag::get ttl)"
+
+# --- secret: 3 formas de entrada ---
+flag::reset
+flag::add_secret dbpass --env PVX_DBPASS
+flag::parse --dbpass hunter2 2>/dev/null
+assert_eq 'secret via literal --dbpass funciona' hunter2 "$(flag::get dbpass)"
+
+secret_file="$(pvx::tmpdir)/secret.txt"
+printf 's3cr3t-file' >"$secret_file" # sem newline final de propósito (regressão do `read`)
+flag::reset
+flag::add_secret dbpass --env PVX_DBPASS
+flag::parse --dbpass-file "$secret_file"
+assert_eq 'secret via --dbpass-file funciona (mesmo sem newline final)' 's3cr3t-file' "$(flag::get dbpass)"
+
+flag::reset
+flag::add_secret dbpass --env PVX_DBPASS
+export PVX_DBPASS=via-env
+flag::parse
+assert_eq 'secret via variável de ambiente funciona' via-env "$(flag::get dbpass)"
+unset PVX_DBPASS
+
+# --- repeat ---
+flag::reset
+flag::add exclude --repeat --type string
+flag::parse --exclude a --exclude b --exclude c
+assert_eq 'flag --repeat acumula valores' "$(printf 'a\nb\nc')" "$(flag::get_all exclude)"
+
+# --- -- encerra parsing de opções ---
+flag::reset
+flag::add verbose --short v --type bool
+flag::parse -- -v --nao-e-flag
+assert_eq '-- impede que -v seja parseado como flag' 0 "$(flag::get verbose 0)"
+assert_eq '-- move tudo depois pra positional' "$(printf -- '-v\n--nao-e-flag')" "$(flag::args)"
+
+# --- allow_unknown ---
+flag::reset
+flag::allow_unknown 1
+flag::add x --type bool
+flag::parse --x --desconhecida valor
+assert_eq 'flag desconhecida vai pra PVX_UNKNOWN' '--desconhecida' "${PVX_UNKNOWN[0]}"
+
+# --- --help autogerado (roda em subshell pq flag::parse --help faz exit) ---
+help_out=$(
+  flag::reset
+  flag::set_usage pvx-teste 'Comando de teste' 'pvx-teste [opções] <arquivo>' 'rodapé de teste'
+  flag::add_standard
+  flag::add out --short o --type path --help 'arquivo de saída' --group saida
+  flag::add_example 'pvx-teste -v -o /tmp/x arquivo.txt'
+  flag::parse --help
+)
+assert_contains '--help mostra o summary' "$help_out" 'Comando de teste'
+assert_contains '--help mostra a linha de uso' "$help_out" 'pvx-teste [opções] <arquivo>'
+assert_contains '--help mostra flags padrão' "$help_out" '--dry-run'
+assert_contains '--help mostra flag customizado com short' "$help_out" '-o, --out'
+assert_contains '--help mostra exemplo' "$help_out" 'pvx-teste -v -o /tmp/x arquivo.txt'
+assert_contains '--help mostra o rodapé' "$help_out" 'rodapé de teste'
+
+assert_summary

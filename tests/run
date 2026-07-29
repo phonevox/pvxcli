@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# tests/run — entrypoint pra rodar os testes do pvx-core (unit + suites).
+#
+# Uso interativo (sem argumentos): mostra um menu de seleção múltipla — primeiro escolhe
+# categorias (suites/units), depois quais testes de cada categoria.
+#
+# Uso não-interativo (scripts/CI):
+#   tests/run --list                 lista os testes descobertos e sai
+#   tests/run all                    roda tudo (todas as suites + todos os units)
+#   tests/run units [nome...]        roda units específicos (ou todos, se nenhum nome for dado)
+#   tests/run suites [nome...]       roda suites específicas (ou todas, se nenhum nome for dado)
+#
+# Só lê/roda arquivos dentro de tests/ — não modifica nada fora daqui.
+set -Eeuo pipefail
+
+_RUN_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PVX_ROOT=$(cd -P "$_RUN_DIR/.." && pwd)
+PVX_LIB_DIR="$PVX_ROOT/lib"
+export PVX_ROOT PVX_LIB_DIR
+
+# shellcheck source=/dev/null
+source "$PVX_LIB_DIR/bootstrap.sh"
+pvx::require color
+color::init
+# shellcheck source=/dev/null
+source "$_RUN_DIR/lib/menu.sh"
+
+UNIT_DIR="$_RUN_DIR/unit"
+SUITE_DIR="$_RUN_DIR/suites"
+
+# run::_names <dir> — imprime (em ordem alfabética) o nome-base (sem .sh) de cada teste do dir.
+run::_names() {
+  local dir=$1 f
+  [[ -d $dir ]] || return 0
+  for f in "$dir"/*.sh; do
+    [[ -e $f ]] || continue
+    basename "$f" .sh
+  done | sort
+}
+
+# run::_path <dir> <nome> — caminho do arquivo de teste, ou vazio + rc=1 se não existir.
+run::_path() {
+  local dir=$1 name=$2 f="$dir/$name.sh"
+  [[ -r $f ]] || return 1
+  printf '%s\n' "$f"
+}
+
+run::_usage() {
+  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# --- descoberta ------------------------------------------------------------------------------
+mapfile -t UNIT_NAMES < <(run::_names "$UNIT_DIR")
+mapfile -t SUITE_NAMES < <(run::_names "$SUITE_DIR")
+
+# --- monta a lista de execução (categoria + nome + caminho) ----------------------------------
+declare -a RUN_CATS=() RUN_NAMES=() RUN_PATHS=()
+
+run::_queue() { # <categoria> <dir> <nome...>
+  local cat=$1 dir=$2
+  shift 2
+  local name path
+  for name in "$@"; do
+    if path=$(run::_path "$dir" "$name"); then
+      RUN_CATS+=("$cat")
+      RUN_NAMES+=("$name")
+      RUN_PATHS+=("$path")
+    else
+      printf '%saviso:%s teste "%s" não encontrado em %s, ignorando\n' \
+        "${PVX_C[warn]:-}" "${PVX_C[reset]:-}" "$name" "$dir" >&2
+    fi
+  done
+}
+
+# --- modo não-interativo -----------------------------------------------------------------------
+if (( $# > 0 )); then
+  case $1 in
+    -h | --help)
+      run::_usage
+      exit 0
+      ;;
+    --list)
+      printf '%sunits%s (%s)\n' "${PVX_C[bold]:-}" "${PVX_C[reset]:-}" "$UNIT_DIR"
+      if (( ${#UNIT_NAMES[@]} > 0 )); then
+        printf '  %s\n' "${UNIT_NAMES[@]}"
+      else
+        printf '  (nenhum ainda)\n'
+      fi
+      printf '%ssuites%s (%s)\n' "${PVX_C[bold]:-}" "${PVX_C[reset]:-}" "$SUITE_DIR"
+      if (( ${#SUITE_NAMES[@]} > 0 )); then
+        printf '  %s\n' "${SUITE_NAMES[@]}"
+      else
+        printf '  (nenhuma ainda)\n'
+      fi
+      exit 0
+      ;;
+    all)
+      run::_queue units "$UNIT_DIR" "${UNIT_NAMES[@]+"${UNIT_NAMES[@]}"}"
+      run::_queue suites "$SUITE_DIR" "${SUITE_NAMES[@]+"${SUITE_NAMES[@]}"}"
+      ;;
+    units)
+      shift
+      if (( $# > 0 )); then
+        run::_queue units "$UNIT_DIR" "$@"
+      else
+        run::_queue units "$UNIT_DIR" "${UNIT_NAMES[@]+"${UNIT_NAMES[@]}"}"
+      fi
+      ;;
+    suites)
+      shift
+      if (( $# > 0 )); then
+        run::_queue suites "$SUITE_DIR" "$@"
+      else
+        run::_queue suites "$SUITE_DIR" "${SUITE_NAMES[@]+"${SUITE_NAMES[@]}"}"
+      fi
+      ;;
+    *)
+      printf 'tests/run: argumento desconhecido: %s\n\n' "$1" >&2
+      run::_usage >&2
+      exit 2
+      ;;
+  esac
+else
+  # --- modo interativo: menu de categorias, depois menu de testes por categoria ---------------
+  declare -a CAT_LABELS=() CAT_KEYS=()
+  if (( ${#SUITE_NAMES[@]} > 0 )); then
+    CAT_LABELS+=("suites (${#SUITE_NAMES[@]})")
+    CAT_KEYS+=("suites")
+  fi
+  if (( ${#UNIT_NAMES[@]} > 0 )); then
+    CAT_LABELS+=("units (${#UNIT_NAMES[@]})")
+    CAT_KEYS+=("units")
+  fi
+
+  if (( ${#CAT_KEYS[@]} == 0 )); then
+    printf '%snenhum teste encontrado%s em %s ou %s\n' \
+      "${PVX_C[error]:-}" "${PVX_C[reset]:-}" "$UNIT_DIR" "$SUITE_DIR" >&2
+    exit 1
+  fi
+
+  if ! menu::select 'o que você quer rodar?' "${CAT_LABELS[@]}"; then
+    printf 'cancelado.\n'
+    exit 0
+  fi
+
+  idx=0
+  for ((idx = 0; idx < ${#CAT_LABELS[@]}; idx++)); do
+    [[ ${CAT_LABELS[idx]} == "$MENU_CHOICE" ]] || continue
+    case ${CAT_KEYS[idx]} in
+      units)
+        if menu::checklist 'quais testes de unidade você quer rodar?' "${UNIT_NAMES[@]}"; then
+          run::_queue units "$UNIT_DIR" "${MENU_RESULT[@]+"${MENU_RESULT[@]}"}"
+        fi
+        ;;
+      suites)
+        if menu::checklist 'quais suites você quer rodar?' "${SUITE_NAMES[@]}"; then
+          run::_queue suites "$SUITE_DIR" "${MENU_RESULT[@]+"${MENU_RESULT[@]}"}"
+        fi
+        ;;
+    esac
+  done
+fi
+
+if (( ${#RUN_PATHS[@]} == 0 )); then
+  printf 'nenhum teste selecionado, saindo.\n'
+  exit 0
+fi
+
+# --- execução ------------------------------------------------------------------------------
+# Captura a saída de cada teste em vez de jogá-la direto no terminal — as asserções já são
+# diretas (pass/fail), o resumo por teste é o que importa. Cor da linha-resumo é sempre a do
+# próprio tests/run (PVX_C daqui), nunca a do processo filho — assim não importa se o teste em
+# si carrega lib/color.sh ou deixa o modo de cor em "never" antes de sair.
+declare -i total=${#RUN_PATHS[@]} passed=0 failed=0
+declare -a FAILED_LABELS=()
+
+for ((i = 0; i < total; i++)); do
+  label="${RUN_CATS[i]}/${RUN_NAMES[i]}"
+  rc=0
+  output=$("$BASH" "${RUN_PATHS[i]}" 2>&1) || rc=$?
+  stripped=$(color::strip "$output")
+  counts=$(printf '%s\n' "$stripped" | grep -E '[0-9]+/[0-9]+ passaram' | tail -n1) || true
+  counts=$(menu::_trim "${counts:-}")
+
+  if (( rc == 0 )); then
+    passed+=1
+    printf '  %sok%s      %-24s %s\n' "${PVX_C[ok]:-}" "${PVX_C[reset]:-}" "$label" "$counts"
+  else
+    failed+=1
+    FAILED_LABELS+=("$label")
+    printf '  %sFALHOU%s  %-24s %s\n' "${PVX_C[error]:-}" "${PVX_C[reset]:-}" "$label" "$counts"
+  fi
+
+  # expande as asserções individuais (linhas "ok - ..."/"FALHOU - ..." do tests/lib/assert.sh),
+  # recoloridas com as cores do próprio tests/run — ignora ruído do teste (logs, prints de
+  # debug etc.), já que só essas linhas têm o formato exato de assert_pass/assert_fail.
+  assertions=$(printf '%s\n' "$stripped" | grep -E '^  (ok|FALHOU) - ') || true
+  if [[ -n $assertions ]]; then
+    while IFS= read -r assertion_line; do
+      if [[ $assertion_line == '  ok - '* ]]; then
+        printf '      %sok%s - %s\n' "${PVX_C[ok]:-}" "${PVX_C[reset]:-}" "${assertion_line#'  ok - '}"
+      else
+        printf '      %sFALHOU%s - %s\n' "${PVX_C[error]:-}" "${PVX_C[reset]:-}" "${assertion_line#'  FALHOU - '}"
+      fi
+    done <<<"$assertions"
+  fi
+
+  # em caso de falha sem sinal de nenhuma asserção capturada, o teste provavelmente quebrou
+  # antes de rodar qualquer assert_* (erro de sintaxe, set -e, etc.) — mostra a saída crua
+  # como último recurso pra diagnosticar.
+  if (( rc != 0 )) && [[ -z $assertions ]]; then
+    printf '%s\n' "$output" | sed 's/^/      /'
+  fi
+done
+
+printf '\n%s%s%s\n' "${PVX_C[bold]:-}" '── resumo ──' "${PVX_C[reset]:-}"
+if (( failed > 0 )); then
+  printf '%s%d/%d testes passaram (%d FALHARAM)%s\n' \
+    "${PVX_C[error]:-}" "$passed" "$total" "$failed" "${PVX_C[reset]:-}"
+  printf '  falharam: %s\n' "${FAILED_LABELS[*]}"
+  exit 1
+fi
+printf '%s%d/%d testes passaram%s\n' "${PVX_C[ok]:-}" "$passed" "$total" "${PVX_C[reset]:-}"
+exit 0

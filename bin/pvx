@@ -52,7 +52,7 @@ PVX_OFFLINE=${PVX_OFFLINE:-0}
 PVX_NONINTERACTIVE=${PVX_NONINTERACTIVE:-0}
 export PVX_DRY_RUN PVX_ASSUME_YES PVX_OFFLINE PVX_NONINTERACTIVE
 
-pvx::require color log os paths flags
+pvx::require color log os paths exec flags
 pvx::install_traps # já pré-aquece invocation_id/tmpdir num shell não-subshell
 
 # --- resolução de comando: extensível via este array (novo tipo = +1 função) -----------------

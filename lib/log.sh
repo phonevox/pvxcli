@@ -53,7 +53,10 @@ log::is_enabled() {
 # --- fallback ladder e rotação --------------------------------------------------------------
 log::_close_fd() {
   if [[ -n $_PVX_LOG_FD ]]; then
-    exec {_PVX_LOG_FD}>&- 2>/dev/null || true
+    # NUNCA encadear `2>/dev/null` no mesmo `exec {var}>&-` que fecha um fd por número
+    # dinâmico — bash (confirmado em 5.3.15) fecha o fd 2 do processo nessa combinação
+    # específica, mesmo $var apontando pra outro descritor. Sem o `2>/dev/null` funciona.
+    exec {_PVX_LOG_FD}>&- || true
     _PVX_LOG_FD=''
   fi
 }
