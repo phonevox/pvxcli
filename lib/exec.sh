@@ -242,7 +242,14 @@ exec::confirm() {
     return 1
   fi
   local ans=''
-  read -rp "$prompt " ans 2>/dev/null </dev/tty || ans=$default
+  # NÃO usar "read -p": o bash escreve esse prompt em STDERR, não stdout (ver `man bash`) — um
+  # "2>/dev/null" na mesma chamada (pensado só como blindagem caso /dev/tty falhe) apagava o
+  # prompt inteiro junto. A confirmação ficava invisível e parecia "cancelar sozinha": o
+  # usuário via só a tela de antes, apertava enter (respondendo "" a uma pergunta que nunca
+  # viu) e caía no default 'n' — achado de verdade em `pvx modules remove`, reproduzido com
+  # `script` (pty real) confirmando que o prompt nunca aparecia na sessão.
+  printf '%s ' "$prompt"
+  IFS= read -r ans </dev/tty 2>/dev/null || ans=$default
   [[ -z $ans ]] && ans=$default
   case $ans in
     y | Y | yes | s | S | sim) return 0 ;;
