@@ -1,0 +1,56 @@
+name: Release
+
+# Dispara ao empurrar uma tag "vX.Y.Z" (ex: v0.1.0) — publica um GitHub Release com o tarball
+# da release + um manifesto self-update.json, no formato que `pvx self-update` espera (ver
+# lib/core/self_update.sh). Não builda nada em C/binário: é literalmente o conteúdo do repo
+# nesse ref, empacotado (git archive já exclui .git/dist/learning-materials sozinho, já que
+# nenhum dos dois é rastreado — ver .gitignore).
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Monta o tarball de release + manifesto self-update.json
+        run: |
+          set -Eeuo pipefail
+          version=$(cat VERSION)
+          tag=${GITHUB_REF_NAME}
+          name="pvxcli-${version}"
+          mkdir -p dist-release
+          git archive --format=tar --prefix="${name}/" HEAD | gzip >"dist-release/${name}.tar.gz"
+          sha=$(sha256sum "dist-release/${name}.tar.gz" | awk '{print $1}')
+
+          cat >dist-release/self-update.json <<EOF
+          {
+            "version": "${version}",
+            "changelog": "notas completas: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}",
+            "tarball": {
+              "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${name}.tar.gz",
+              "sha256": "${sha}"
+            }
+          }
+          EOF
+
+          {
+            echo "TARBALL_PATH=dist-release/${name}.tar.gz"
+            echo "VERSION=${version}"
+          } >>"$GITHUB_ENV"
+
+      - name: Publica o GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "${TARBALL_PATH}" \
+            dist-release/self-update.json \
+            --title "pvx-core ${VERSION}" \
+            --generate-notes

@@ -8,4 +8,9 @@ core::cmd_version() {
       ;;
   esac
   printf 'pvx %s\n' "$PVX_VERSION"
+
+  # só lê o cache de self-update (ver lib/core/self_update.sh) — nunca dispara fetch de rede
+  # aqui, pra "pvx version" continuar instantâneo/scriptável mesmo com self-update configurado.
+  pvx::require core/self_update
+  core::_self_update_print_cached_hint
 }

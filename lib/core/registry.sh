@@ -214,7 +214,17 @@ core::_registry_set() {
   else
     printf 'registry_url = %s\n' "$url" >>"$conf"
   fi
+
+  # Aplica JÁ nesta sessão — sem isso, PVX_REGISTRY_URL continuaria com o valor lido no boot
+  # deste processo (registry_url só é reaplicado por pvx::_load_config na PRÓXIMA invocação do
+  # bin/pvx) e, pior, um cache de índice ainda dentro do TTL serviria dados da URL ANTIGA sem
+  # nem tentar buscar a nova — já que registry::refresh só olha a idade do arquivo, não se a
+  # URL mudou desde que ele foi buscado. Descartar o cache aqui força o próximo refresh (nesta
+  # sessão ou numa futura) a buscar de verdade na URL nova.
+  PVX_REGISTRY_URL=$url
+  rm -f "$(registry::index_path)" "$(registry::index_flat_path)" "$(registry::index_names_path)"
+
   printf 'registry_url definido em %s: %s\n' "$conf" "$url"
-  printf '(vale a partir da próxima chamada do pvx — nada nesta sessão muda)\n'
+  printf '(já vale pro resto desta sessão — outra instância do pvx já aberta em outro terminal só vai enxergar na próxima chamada dela)\n'
   return 0
 }

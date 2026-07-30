@@ -72,7 +72,7 @@ declare -gA PVX_CORE_CMDS=(
   [cache]='core/reserved:core::cmd_reserved'
   [paths]='core/reserved:core::cmd_reserved'
   [log]='core/reserved:core::cmd_reserved'
-  [self-update]='core/reserved:core::cmd_reserved'
+  [self-update]='core/self_update:core::cmd_self_update'
 )
 declare -gA PVX_CORE_NEEDS_ROOT=()
 
@@ -131,7 +131,11 @@ core::_suggest() {
 # propósito: assim volta pro menu depois, em vez de encerrar o pvx junto com o comando).
 # Sem TTY (script/cron/CI), cai no help de texto de sempre — nunca fica esperando teclado.
 core::_interactive_menu() {
-  pvx::require tui
+  pvx::require tui core/self_update
+
+  # best-effort, cacheado (PVX_SELF_UPDATE_TTL) — só bate na rede se o cache expirou, e nunca
+  # atrapalha a abertura do menu se a rede falhar (ver core::_self_update_notify).
+  core::_self_update_notify || true
 
   # rede de segurança: cada tui::select/checklist/pause já restaura a própria stty sozinho no
   # caminho normal (inclusive em Ctrl-C, ver o comentário em tui::_select_tty) — isso aqui é só
@@ -159,10 +163,11 @@ core::_interactive_menu() {
     [sysinfo]='dump read-only de informações do sistema'
     [completion]='gera/instala o script de autocomplete do bash'
     [tests]='roda a suíte de testes do pvx-core (units/suites)'
+    [self-update]='verifica/instala uma versão nova do pvx-core'
     [help]='mostra a ajuda geral ou de um comando'
     [version]='mostra a versão do pvx'
   )
-  local -a order=(modules registry sysinfo completion tests help version)
+  local -a order=(modules registry sysinfo completion tests self-update help version)
   local -a options=() cmd_names=()
   local c
 
@@ -382,6 +387,8 @@ pvx::_load_config() {
       auto_sudo) [[ $v == true || $v == 1 ]] && PVX_AUTO_SUDO=1 ;;
       tui) PVX_TUI=$v ;;
       registry_url) PVX_REGISTRY_URL=$v ;;
+      self_update_url) PVX_SELF_UPDATE_URL=$v ;;
+      self_update_check_ttl) PVX_SELF_UPDATE_TTL=$v ;;
     esac
   done <"$file"
   return 0
@@ -404,6 +411,7 @@ comandos:
   sysinfo     dump read-only de informações do sistema, ponto de partida de debugging
   completion  gera/instala o script de autocomplete do bash
   tests       roda a suíte de testes do pvx-core (list/run all/run units/run suites)
+  self-update verifica/instala uma versão nova do pvx-core (subcomando "check" só verifica)
   help        mostra esta ajuda ou --help de um comando
   version     mostra a versão do pvx
 
@@ -427,31 +435,21 @@ acompanhar seus logs em tempo real, ex: pvx modules logs
 EOF
 }
 
-# core::_maybe_show_ascii_art — mostra ASCII.txt (raiz do pvx-core) uma vez por CHAMADA de
-# `pvx` a partir do shell (terminal interativo de verdade nos dois lados) — não por processo:
-# navegar o menu despacha comandos-folha (tests/sysinfo/help/version/módulo) como subprocesso
-# novo (ver "$PVX_BIN_DIR/pvx" "$chosen_cmd" em core::_interactive_menu), e cada um deles
-# passa por aqui de novo — sem essa marca, escolher "tests" no menu, por exemplo, jogaria a
-# ascii de novo no meio da navegação, o que não faz sentido (achado de verdade testando no
-# container). PVX_ASCII_SHOWN exportado aqui é herdado por esses subprocessos-filhos e os faz
-# pular a exibição; uma invocação NOVA de `pvx` direto do shell não tem essa variável no
-# ambiente (cada `pvx` digitado é um processo raiz próprio) e mostra de novo, normalmente.
-#
-# A flag oculta --loadascii <arquivo> (não documentada em --help, de propósito) ignora tudo
-# isso e força a exibição com o arquivo escolhido, mesmo sem terminal — útil pra testar a
-# arte. Nunca falha se o arquivo não existir (ex: checkout sem ASCII.txt ainda) — só não mostra.
-core::_maybe_show_ascii_art() {
-  local file=${PVX_LOADASCII_FILE:-}
-  if [[ -z $file ]]; then
-    [[ -n ${PVX_ASCII_SHOWN:-} ]] && return 0
-    [[ -t 0 && -t 1 ]] || return 0
-    file="$PVX_ROOT/ASCII.txt"
-  fi
-
+# core::_show_ascii_art <arquivo> — imprime o arquivo (ASCII.txt na raiz do pvx-core, por
+# padrão) seguido de uma linha em branco. Chamada SÓ no exato momento de entrar no modo
+# interativo (pvx sem comando nenhum, terminal de verdade nos dois lados) — nunca pra um
+# comando composto tipo "pvx modules list" ou "pvx registry list", mesmo sendo tecnicamente a
+# primeira invocação do binário: eles não entram no modo interativo, então não mostram nada
+# (achado de verdade testando no container — a ideia é a arte anunciar "você entrou no menu",
+# não "você chamou o binário"). Ver a chamada em main(), dentro do bloco `[[ -z $cmd ]]`.
+# A flag oculta --loadascii <arquivo> (não documentada em --help, de propósito) chama isto
+# direto, ignorando tudo isso — útil pra testar a arte sem precisar entrar no menu. Nunca
+# falha se o arquivo não existir (ex: checkout sem ASCII.txt ainda) — só não mostra.
+core::_show_ascii_art() {
+  local file=$1
   [[ -r $file ]] || return 0
   cat "$file"
   printf '\n'
-  [[ -z ${PVX_LOADASCII_FILE:-} ]] && export PVX_ASCII_SHOWN=1
   return 0
 }
 
@@ -523,13 +521,18 @@ main() {
   done
   export PVX_DRY_RUN PVX_ASSUME_YES PVX_OFFLINE
 
-  core::_maybe_show_ascii_art
+  # --loadascii força a exibição na hora, não importa se o resto é um comando composto ou não
+  # (flag de teste, ignora a regra de "só no modo interativo" de propósito).
+  [[ -n ${PVX_LOADASCII_FILE:-} ]] && core::_show_ascii_art "$PVX_LOADASCII_FILE"
 
   local cmd=${rest[0]:-}
   local -a cmd_args=(${rest[@]+"${rest[@]:1}"})
 
   if [[ -z $cmd ]]; then
     if [[ -t 0 && -t 1 ]]; then
+      # só aqui: entrando de verdade no modo interativo, não num comando composto qualquer
+      # (ex: "pvx modules list" nunca mostra, mesmo sendo a primeira chamada do binário).
+      [[ -z ${PVX_LOADASCII_FILE:-} ]] && core::_show_ascii_art "$PVX_ROOT/ASCII.txt"
       core::_interactive_menu
       exit $?
     fi

@@ -136,7 +136,16 @@ core::_completion_auto_install() {
       log::hint 'instale o pacote "bash-completion" manualmente (nenhum gerenciador de pacotes conhecido foi encontrado)'
     elif exec::confirm 'instalar o pacote bash-completion agora? [Y/n]' y; then
       if os::pkg_install bash-completion; then
-        printf 'bash-completion instalado — o completion do pvx já funciona sozinho a partir de agora.\n'
+        # NÃO basta dar source no .bashrc de novo: /etc/bashrc (RHEL-like) tem uma guarda de
+        # "só roda uma vez por sessão" (BASHRCSOURCED) — refazer o source do .bashrc numa
+        # sessão que já estava aberta ANTES do bash-completion ser instalado não re-executa
+        # o loop que carrega /etc/profile.d/bash_completion.sh, então não ativa nada (achado
+        # de verdade testando: repetir o source do .bashrc depois de instalar não fazia
+        # diferença nenhuma). Sourcear o arquivo do bash-completion DIRETO passa por cima
+        # dessa guarda e ativa de fato nesta sessão, sem precisar abrir um shell novo.
+        printf 'bash-completion instalado. Pra ativar já nesta sessão (sessões novas a partir de\n'
+        printf 'agora já ativam sozinhas), rode:\n'
+        printf '  source /usr/share/bash-completion/bash_completion\n'
       else
         log::error 'falha ao instalar bash-completion — instale manualmente: %s install bash-completion' "$mgr"
       fi

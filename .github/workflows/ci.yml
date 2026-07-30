@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sobe o ambiente de teste (Rocky Linux, igual ao dev local)
+        run: docker compose up -d --build
+
+      - name: Espera o container ficar pronto
+        run: |
+          for i in $(seq 1 30); do
+            docker exec testrocky true 2>/dev/null && exit 0
+            sleep 1
+          done
+          echo "container não ficou pronto a tempo" >&2
+          exit 1
+
+      - name: Roda a suíte de testes do pvx-core
+        run: docker exec testrocky bash -lc 'cd /opt/issabel-mineracao && tests/run all'
+
+      - name: Desliga o ambiente de teste
+        if: always()
+        run: docker compose down -v

@@ -85,7 +85,8 @@ tui::_select_tty() {
         printf '    %s\n' "${items[i]}"
       fi
     done
-    printf '  %s↑/↓ · enter confirma · ctrl+c cancela%s\n' "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
+    printf '  %s↑/↓ para navegar · enter para selecionar · esc ou ctrl+c para cancelar%s\n' \
+      "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
     rows_drawn=$((n + 2))
 
     key=''
@@ -307,7 +308,7 @@ tui::_checklist_tty() {
         printf '    [%s] %s\n' "$mark" "${items[i]}"
       fi
     done
-    printf '  %s↑/↓ · espaço marca · a marca/desmarca tudo · enter confirma · ctrl+c cancela%s\n' \
+    printf '  %s↑/↓ para navegar · espaço marca · a marca/desmarca tudo · enter para selecionar · esc ou ctrl+c para cancelar%s\n' \
       "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
     rows_drawn=$((n + 2))
 
