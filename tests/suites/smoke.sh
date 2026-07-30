@@ -48,8 +48,17 @@ log::init
 # shellcheck source=/dev/null
 source "$_TEST_DIR/../lib/assert.sh"
 
-# --- sandbox isolado: todo o estado do pvx (installed.db, symlinks, módulos) vive aqui ---
-export PVX_ROOT_PREFIX="$(pvx::tmpdir)/sandbox"
+# --- sandbox isolado: todo o estado do pvx (installed.db, symlinks, módulos) vive aqui —
+# DELIBERADAMENTE não debaixo de pvx::tmpdir() (que é sempre $TMPDIR/tmp): um /opt/pvx real
+# nunca fica no mesmo filesystem que /tmp, e alguns sistemas endurecidos montam /tmp como
+# noexec — colocar o "/opt/pvx" simulado do teste também dentro de /tmp esconderia essa
+# diferença real (os entrypoints/hooks publicados aqui ficariam noexec só por causa do
+# sandbox, não porque o sistema de verdade faria isso). Cria ao lado do próprio checkout —
+# mesmo filesystem de bin/pvx, que por definição já precisa ser executável pra funcionar.
+_SMOKE_SANDBOX_BASE=$(mktemp -d "$PVX_ROOT/.smoke-sandbox.XXXXXX")
+_smoke_cleanup_sandbox() { rm -rf "$_SMOKE_SANDBOX_BASE"; }
+pvx::on_exit _smoke_cleanup_sandbox
+export PVX_ROOT_PREFIX="$_SMOKE_SANDBOX_BASE/sandbox"
 mkdir -p "$PVX_ROOT_PREFIX"
 
 pvx() {
@@ -393,6 +402,16 @@ assert_flush
 rc=0
 out=$(pvx registry set ftp://exemplo.com 2>&1) || rc=$?
 test_59_registry_set_rejeita_esquema() { assert_ne '29. registry set rejeita esquema desconhecido (ftp://)' 0 "$rc"; }
+assert_flush
+
+# --- 30. `pvx` sem NENHUM argumento (nem "help"): sem TTY, mostra a ajuda de texto (nunca
+# fica esperando teclado num script/CI) — o menu interativo (core::_interactive_menu) só
+# entra em cena com TTY de verdade nos dois lados, o que este teste — via $(...), nunca um
+# TTY — nunca vai exercitar. Isso é testado manualmente. ---
+rc=0
+out=$(pvx 2>&1) || rc=$?
+test_60_bare_sem_args_rc() { assert_eq '30. pvx (sem nenhum argumento) retorna rc=0' 0 "$rc"; }
+test_61_bare_sem_args_mostra_ajuda() { assert_contains '30. pvx (sem nenhum argumento) mostra a ajuda geral' "$out" 'uso: pvx'; }
 assert_flush
 
 assert_summary

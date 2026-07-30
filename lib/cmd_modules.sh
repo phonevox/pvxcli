@@ -288,7 +288,9 @@ modules::_git_clone_staging() {
   local url=$1 ref=${2:-}
 
   if ! command -v git >/dev/null 2>&1; then
-    log::error 'git não encontrado — não é possível instalar módulos via git'
+    local mgr
+    mgr=$(os::pkg_manager 2>/dev/null) || mgr='<gerenciador de pacotes>'
+    log::error 'git não encontrado — não é possível instalar/atualizar módulos via git (tente: %s install git)' "$mgr"
     return 4
   fi
 
@@ -464,14 +466,19 @@ modules::_publish_staging() {
   hook_install=$(json::get_def "$flat" .hooks.install '')
   if [[ -n $hook_install ]]; then
     local hook_path="$staging/$hook_install"
-    if [[ -x $hook_path ]]; then
+    if [[ -r $hook_path ]]; then
+      # roda via "bash <script>", não "$hook_path" direto: o staging vive debaixo de
+      # pvx::tmpdir() (normalmente /tmp), que em sistemas endurecidos pode estar montado
+      # noexec — nesse caso o kernel recusa executar o ARQUIVO diretamente (mesmo com +x),
+      # mas nada impede um interpretador já executável (bash, num filesystem normal) de LER
+      # o script como argumento. Achado de verdade testando num host com /tmp noexec.
       PVX_ROOT="$PVX_ROOT" PVX_LIB_DIR="$PVX_LIB_DIR" PVX_MODULE_NAME="$name" \
         PVX_MODULE_VERSION="$version" PVX_MODULE_DIR="$PVX_MODULES_DIR/$name" \
         PVX_STATE_DIR="$PVX_STATE_DIR" PVX_MODULE_STATE_DIR="$module_state_dir" \
         PVX_HOOK=install PVX_DRY_RUN="${PVX_DRY_RUN:-0}" \
-        "$hook_path" || hook_rc=$?
+        bash "$hook_path" || hook_rc=$?
     else
-      log::warn 'hook install declarado mas não executável: %s' "$hook_install"
+      log::warn 'hook install declarado mas não encontrado/legível: %s' "$hook_install"
     fi
   fi
   if ((hook_rc != 0)); then
@@ -506,7 +513,7 @@ modules::_publish_staging() {
 
 # --- update -------------------------------------------------------------------------------
 modules::cmd_update() {
-  pvx::require registry json exec net integrity
+  pvx::require registry json exec os net integrity
   local target=${1:-}
 
   registry::refresh || return 4
@@ -630,13 +637,16 @@ modules::_apply_update_from_staging() {
   local module_dir="$PVX_MODULES_DIR/$name"
   local module_state_dir="$PVX_STATE_DIR/state/$name"
   local hook_rc=0
-  if [[ -n $hook_update && -x "$staging/$hook_update" ]]; then
+  if [[ -n $hook_update && -r "$staging/$hook_update" ]]; then
+    # via "bash <script>", não direto — ver o comentário equivalente em
+    # modules::_publish_staging (staging vive debaixo de pvx::tmpdir(), que pode estar
+    # montado noexec num sistema endurecido).
     PVX_ROOT="$PVX_ROOT" PVX_LIB_DIR="$PVX_LIB_DIR" PVX_MODULE_NAME="$name" \
       PVX_MODULE_VERSION="$new_ver" PVX_MODULE_OLD_VERSION="$old_ver" \
       PVX_MODULE_DIR="$module_dir" PVX_STATE_DIR="$PVX_STATE_DIR" \
       PVX_MODULE_STATE_DIR="$module_state_dir" PVX_HOOK=update \
       PVX_DRY_RUN="${PVX_DRY_RUN:-0}" \
-      "$staging/$hook_update" || hook_rc=$?
+      bash "$staging/$hook_update" || hook_rc=$?
   fi
   if ((hook_rc != 0)); then
     log::error 'hook update falhou (rc=%d) — mantendo %s na versão %s' "$hook_rc" "$name" "$old_ver"
@@ -715,12 +725,13 @@ modules::cmd_remove() {
     json::flatten_file "$meta_dir/module.json" >"$flat" 2>/dev/null || true
     hook_uninstall=$(json::get_def "$flat" .hooks.uninstall '' 2>/dev/null) || hook_uninstall=''
   fi
-  if [[ -n $hook_uninstall && -x "$module_dir/$hook_uninstall" ]]; then
+  if [[ -n $hook_uninstall && -r "$module_dir/$hook_uninstall" ]]; then
+    # via "bash <script>" — ver o comentário em modules::_publish_staging.
     PVX_ROOT="$PVX_ROOT" PVX_LIB_DIR="$PVX_LIB_DIR" PVX_MODULE_NAME="$name" \
       PVX_MODULE_VERSION="$version" PVX_MODULE_DIR="$module_dir" \
       PVX_STATE_DIR="$PVX_STATE_DIR" PVX_MODULE_STATE_DIR="$module_state_dir" \
       PVX_HOOK=uninstall PVX_DRY_RUN="${PVX_DRY_RUN:-0}" \
-      "$module_dir/$hook_uninstall" || hook_rc=$?
+      bash "$module_dir/$hook_uninstall" || hook_rc=$?
     if ((hook_rc != 0)); then
       log::warn 'hook uninstall retornou rc=%d (removendo mesmo assim)' "$hook_rc"
     fi

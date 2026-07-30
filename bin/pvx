@@ -124,6 +124,92 @@ core::_suggest() {
   return 0
 }
 
+# core::_interactive_menu — `pvx` sem nenhum comando, com TTY de verdade dos dois lados: em
+# vez do texto de ajuda estático, sobe um menu (lib/tui.sh) listando todo comando válido —
+# core, módulo instalado, snippet — e roda o escolhido como um processo novo (não `exec`, de
+# propósito: assim volta pro menu depois, em vez de encerrar o pvx junto com o comando).
+# Sem TTY (script/cron/CI), cai no help de texto de sempre — nunca fica esperando teclado.
+core::_interactive_menu() {
+  pvx::require tui
+
+  local -A descriptions=(
+    [modules]='gerencia módulos instaláveis (list/install/remove/update/help)'
+    [registry]='consulta/configura o índice remoto de módulos'
+    [sysinfo]='dump read-only de informações do sistema'
+    [completion]='gera/instala o script de autocomplete do bash'
+    [help]='mostra a ajuda geral ou de um comando'
+    [version]='mostra a versão do pvx'
+  )
+  local -a order=(modules registry sysinfo completion help version)
+  local -a options=() cmd_names=()
+  local c
+
+  for c in "${order[@]}"; do
+    if [[ -n ${PVX_CORE_CMDS[$c]:-} ]] || [[ -r "$PVX_ROOT/share/pvx/snippets/$c.sh" ]]; then
+      options+=("$(printf '%-12s %s' "$c" "${descriptions[$c]:-}")")
+      cmd_names+=("$c")
+    fi
+  done
+
+  if [[ -d $PVX_STATE_DIR/commands ]]; then
+    for c in "$PVX_STATE_DIR"/commands/*; do
+      [[ -e $c || -L $c ]] || continue
+      c=${c##*/}
+      local meta_file="$PVX_STATE_DIR/modules/$c/module.json" summary=''
+      [[ -r $meta_file ]] && summary=$(core::_module_field_grep "$meta_file" summary)
+      options+=("$(printf '%-12s %s' "$c" "${summary:-módulo instalado}")")
+      cmd_names+=("$c")
+    done
+  fi
+
+  if [[ -d "$PVX_ROOT/share/pvx/snippets" ]]; then
+    local f already
+    for f in "$PVX_ROOT"/share/pvx/snippets/*.sh; do
+      [[ -e $f ]] || continue
+      f=${f##*/}
+      f=${f%.sh}
+      already=0
+      for c in ${cmd_names[@]+"${cmd_names[@]}"}; do
+        [[ $c == "$f" ]] && {
+          already=1
+          break
+        }
+      done
+      ((already)) && continue # já listado acima via a lista curada em $order
+      options+=("$(printf '%-12s %s' "$f" 'comando embutido')")
+      cmd_names+=("$f")
+    done
+  fi
+
+  if ((${#options[@]} == 0)); then
+    pvx::_print_help
+    return 0
+  fi
+
+  local i chosen_cmd resp
+  while true; do
+    if ! tui::select 'pvx — o que você quer fazer?' "${options[@]}"; then
+      return 0
+    fi
+    chosen_cmd=''
+    for ((i = 0; i < ${#options[@]}; i++)); do
+      if [[ ${options[i]} == "$TUI_CHOICE" ]]; then
+        chosen_cmd=${cmd_names[i]}
+        break
+      fi
+    done
+    [[ -z $chosen_cmd ]] && continue
+
+    printf '\n'
+    "$PVX_BIN_DIR/pvx" "$chosen_cmd"
+
+    printf '\n%spressione enter pra voltar ao menu (q sai)%s\n' "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
+    resp=''
+    IFS= read -r resp || return 0
+    [[ $resp == q || $resp == Q ]] && return 0
+  done
+}
+
 # Resolve o <name> do módulo a partir do symlink de despacho (aponta pra dentro de
 # $PVX_MODULES_DIR/<name>/...) — evita ter que reparsear module.json inteiro só pra achar o
 # próprio nome do módulo.
@@ -241,6 +327,9 @@ pvx::_print_help() {
   cat <<'EOF'
 uso: pvx [opções globais] <comando> [args...]
 
+sem nenhum comando, num terminal interativo, "pvx" sozinho abre um menu pra escolher o
+que fazer em vez de mostrar este texto.
+
 comandos:
   modules     gerencia módulos instaláveis (list/install/remove/update/help)
   registry    consulta/configura o índice remoto de módulos (status/list/refresh/set)
@@ -337,6 +426,10 @@ main() {
   local -a cmd_args=(${rest[@]+"${rest[@]:1}"})
 
   if [[ -z $cmd ]]; then
+    if [[ -t 0 && -t 1 ]]; then
+      core::_interactive_menu
+      exit $?
+    fi
     pvx::_print_help
     exit 0
   fi
