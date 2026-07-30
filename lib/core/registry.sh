@@ -12,13 +12,83 @@ core::cmd_registry() {
     list) core::_registry_list ;;
     refresh) core::_registry_refresh "$@" ;;
     set) core::_registry_set "$@" ;;
-    '' | -h | --help) core::_registry_usage ;;
+    '')
+      if [[ -t 0 && -t 1 ]]; then
+        core::_registry_interactive_menu
+      else
+        core::_registry_usage
+      fi
+      ;;
+    -h | --help) core::_registry_usage ;;
     *)
       log::error 'registry: subcomando desconhecido: %s' "$sub"
       core::_registry_usage >&2
       return "$PVX_EXIT_USAGE"
       ;;
   esac
+}
+
+# --- submenu interativo (`pvx registry` sem subcomando, com TTY) -----------------------------
+core::_registry_interactive_menu() {
+  pvx::require tui
+
+  local -a options=(
+    'status           mostra URL do registry, estado do cache e contagem de módulos'
+    'list             lista os módulos publicados no registry'
+    'refresh          busca o índice remoto de novo (respeita o TTL do cache)'
+    'refresh --force  busca o índice remoto de novo, ignorando o TTL'
+    'set              define uma nova URL de registry (requer root)'
+  )
+  local -a keys=(status list refresh refresh-force set)
+
+  local i chosen
+  while true; do
+    if ! tui::select 'pvx registry — o que você quer fazer?' "${options[@]}"; then
+      return 0
+    fi
+    chosen=''
+    for ((i = 0; i < ${#options[@]}; i++)); do
+      if [[ ${options[i]} == "$TUI_CHOICE" ]]; then
+        chosen=${keys[i]}
+        break
+      fi
+    done
+    [[ -z $chosen ]] && continue
+
+    printf '\n'
+    # "|| true" em cada ramo: essas funções já logam seu próprio erro antes de retornar rc≠0
+    # (ex: refresh sem rede/cache) — sem isso, o rc vazaria como comando solto sob `set -e` e
+    # derrubaria o pvx inteiro em vez de só mostrar o erro e voltar pro mesmo submenu (mesmo
+    # achado de lib/cmd_modules.sh, testado de verdade no container).
+    case $chosen in
+      status) core::_registry_status || true ;;
+      list) core::_registry_list || true ;;
+      refresh) core::_registry_refresh || true ;;
+      refresh-force) core::_registry_refresh --force || true ;;
+      set) core::_registry_interactive_set || true ;;
+    esac
+
+    tui::pause 'pressione enter pra continuar (q/esc volta)'
+    ((TUI_BACK)) && return 0
+  done
+}
+
+# core::_registry_interactive_set — checa root ANTES de pedir a URL (em vez de deixar
+# core::_registry_set/os::require_root derrubar o pvx inteiro com `exit`): sem privilégio,
+# só avisa e volta pro submenu, do jeito que faz sentido dentro de um menu interativo.
+core::_registry_interactive_set() {
+  pvx::require tui
+  if ! os::is_root; then
+    log::error 'registry set requer privilégios de root (rodando como uid %d)' "$EUID"
+    log::hint 'tente: sudo pvx registry set <url>'
+    return 0
+  fi
+  if ! tui::input 'nova URL do registry (file:// ou http(s)://)'; then
+    printf 'cancelado.\n'
+    return 0
+  fi
+  core::_registry_set "$TUI_INPUT" || true
+  return 0
 }
 
 core::_registry_usage() {

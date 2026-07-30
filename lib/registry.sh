@@ -225,7 +225,7 @@ registry::state_list() {
 # Nomes reservados pro core — um módulo não pode se chamar assim (ficaria inalcançável, já que
 # o dispatcher sempre resolve comandos core primeiro).
 declare -ga PVX_RESERVED_COMMAND_NAMES=(
-  modules completion help version doctor config cache paths log self-update
+  modules completion help version tests doctor config cache paths log self-update
 )
 
 registry::_is_reserved_command() {

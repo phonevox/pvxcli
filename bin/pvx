@@ -66,6 +66,7 @@ declare -gA PVX_CORE_CMDS=(
   [modules]='cmd_modules:core::cmd_modules'
   [completion]='core/completion:core::cmd_completion'
   [registry]='core/registry:core::cmd_registry'
+  [tests]='core/tests:core::cmd_tests'
   [doctor]='core/reserved:core::cmd_reserved'
   [config]='core/reserved:core::cmd_reserved'
   [cache]='core/reserved:core::cmd_reserved'
@@ -137,14 +138,19 @@ core::_interactive_menu() {
     [registry]='consulta/configura o índice remoto de módulos'
     [sysinfo]='dump read-only de informações do sistema'
     [completion]='gera/instala o script de autocomplete do bash'
+    [tests]='roda a suíte de testes do pvx-core (units/suites)'
     [help]='mostra a ajuda geral ou de um comando'
     [version]='mostra a versão do pvx'
   )
-  local -a order=(modules registry sysinfo completion help version)
+  local -a order=(modules registry sysinfo completion tests help version)
   local -a options=() cmd_names=()
   local c
 
   for c in "${order[@]}"; do
+    # "tests" só faz sentido num checkout de dev (tests/ nunca é copiado por install.sh — ver
+    # o comentário em install.sh e em lib/core/tests.sh) — numa central com o pvx instalado
+    # normalmente, nem mostra a opção, em vez de listar algo que sempre daria erro.
+    [[ $c == tests && ! -x "$PVX_ROOT/tests/run" ]] && continue
     if [[ -n ${PVX_CORE_CMDS[$c]:-} ]] || [[ -r "$PVX_ROOT/share/pvx/snippets/$c.sh" ]]; then
       options+=("$(printf '%-12s %s' "$c" "${descriptions[$c]:-}")")
       cmd_names+=("$c")
@@ -186,7 +192,15 @@ core::_interactive_menu() {
     return 0
   fi
 
-  local i chosen_cmd resp
+  # comandos que sabem abrir o próprio submenu quando chamados sem subcomando (ver
+  # modules::_interactive_menu, core::_registry_interactive_menu,
+  # core::_completion_interactive_menu) — rodam in-process via core::_run_owned_submenu, que
+  # empilha/desempilha nível de menu sem reexecutar todo o bin/pvx. Já cuidam sozinhos das
+  # próprias pausas; rodar de novo a pausa "pressione enter" aqui embaixo só ecoaria vazio
+  # depois de voltar de um submenu cancelado.
+  local -A owned_submenus=([modules]=1 [registry]=1 [completion]=1)
+
+  local i chosen_cmd
   while true; do
     if ! tui::select 'pvx — o que você quer fazer?' "${options[@]}"; then
       return 0
@@ -201,13 +215,36 @@ core::_interactive_menu() {
     [[ -z $chosen_cmd ]] && continue
 
     printf '\n'
+
+    if [[ -n ${owned_submenus[$chosen_cmd]:-} ]]; then
+      core::_run_owned_submenu "$chosen_cmd"
+      continue
+    fi
+
     "$PVX_BIN_DIR/pvx" "$chosen_cmd"
 
-    printf '\n%spressione enter pra voltar ao menu (q sai)%s\n' "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
-    resp=''
-    IFS= read -r resp || return 0
-    [[ $resp == q || $resp == Q ]] && return 0
+    tui::pause 'pressione enter pra voltar ao menu (q/esc sai)'
+    ((TUI_BACK)) && return 0
   done
+}
+
+# core::_run_owned_submenu <cmd> — chama a função core do comando (que já sabe abrir seu
+# próprio submenu quando não recebe subcomando algum) direto no processo atual, em vez de via
+# subprocesso — é isso que permite empilhar/desempilhar nível de menu sem reexecutar bin/pvx.
+core::_run_owned_submenu() {
+  local cmd=$1 target file fn
+  target=${PVX_CORE_CMDS[$cmd]}
+  file=${target%%:*}
+  fn=${target#*:}
+  pvx::require "$file"
+  local saved_ctx=$PVX_LOG_CONTEXT
+  PVX_LOG_CONTEXT=$cmd
+  # "|| true": defesa em profundidade — cada submenu (modules/registry/completion) já garante
+  # rc=0 em todo caminho interativo, mas um comando solto sob `set -e` derruba o pvx inteiro se
+  # ISSO algum dia deixar de valer; melhor um "continue" silencioso aqui do que um crash.
+  "$fn" || true
+  PVX_LOG_CONTEXT=$saved_ctx
+  return 0
 }
 
 # Resolve o <name> do módulo a partir do symlink de despacho (aponta pra dentro de
@@ -335,6 +372,7 @@ comandos:
   registry    consulta/configura o índice remoto de módulos (status/list/refresh/set)
   sysinfo     dump read-only de informações do sistema, ponto de partida de debugging
   completion  gera/instala o script de autocomplete do bash
+  tests       roda a suíte de testes do pvx-core (list/run all/run units/run suites)
   help        mostra esta ajuda ou --help de um comando
   version     mostra a versão do pvx
 

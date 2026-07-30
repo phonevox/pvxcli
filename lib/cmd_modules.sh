@@ -38,13 +38,195 @@ core::cmd_modules() {
     update) modules::cmd_update "$@" ;;
     remove | uninstall) modules::cmd_remove "$@" ;;
     help) modules::cmd_help "$@" ;;
-    '' | -h | --help) modules::_usage ;;
+    '')
+      # sem subcomando: com TTY de verdade dos dois lados, abre o submenu; senão (script/CI),
+      # mantém o help estático de sempre — nunca fica esperando teclado num ambiente não-interativo.
+      if [[ -t 0 && -t 1 ]]; then
+        modules::_interactive_menu
+      else
+        modules::_usage
+      fi
+      ;;
+    -h | --help) modules::_usage ;;
     *)
       log::error 'modules: subcomando desconhecido: %s' "$sub"
       modules::_usage >&2
       return "$PVX_EXIT_USAGE"
       ;;
   esac
+}
+
+# --- submenu interativo (`pvx modules` sem subcomando, com TTY) ------------------------------
+# Cada ação roda e pausa antes de redesenhar o mesmo submenu; 'q'/ESC no seletor de ações
+# devolve o controle pra quem chamou (o menu principal do pvx, ou o shell se for `pvx modules`
+# direto no terminal).
+modules::_interactive_menu() {
+  pvx::require tui registry
+
+  local -a options=(
+    'list      lista módulos instalados e disponíveis no registry'
+    'install   instala um módulo (registry, arquivo local ou url git)'
+    'remove    remove um módulo instalado'
+    'update    atualiza módulo(s) instalado(s)'
+    'help      mostra a ajuda de um módulo instalado'
+  )
+  local -a keys=(list install remove update help)
+
+  local i chosen
+  while true; do
+    if ! tui::select 'pvx modules — o que você quer fazer?' "${options[@]}"; then
+      return 0
+    fi
+    chosen=''
+    for ((i = 0; i < ${#options[@]}; i++)); do
+      if [[ ${options[i]} == "$TUI_CHOICE" ]]; then
+        chosen=${keys[i]}
+        break
+      fi
+    done
+    [[ -z $chosen ]] && continue
+
+    printf '\n'
+    # "|| true" em cada ramo de propósito: essas funções já imprimem seu próprio log::error
+    # antes de retornar rc≠0 (ex: update sem registry alcançável) — sem o "|| true", esse rc
+    # vazaria como comando solto sob `set -e` e derrubaria o pvx inteiro no meio do menu, em
+    # vez de só mostrar o erro e voltar pro mesmo submenu (achado testando de verdade no
+    # container: `modules update` com registry indisponível crashava a sessão inteira).
+    case $chosen in
+      list) modules::cmd_list || true ;;
+      install) modules::_interactive_install || true ;;
+      remove) modules::_interactive_remove || true ;;
+      update) modules::_interactive_update || true ;;
+      help) modules::_interactive_help || true ;;
+    esac
+
+    tui::pause 'pressione enter pra continuar (q/esc volta)'
+    ((TUI_BACK)) && return 0
+  done
+}
+
+# modules::_installed_names — imprime (um por linha) o nome de cada módulo instalado.
+modules::_installed_names() {
+  local rows name _rest
+  rows=$(registry::state_list)
+  while IFS='|' read -r name _rest; do
+    [[ -z $name ]] && continue
+    printf '%s\n' "$name"
+  done <<<"$rows"
+}
+
+modules::_interactive_install() {
+  pvx::require tui
+
+  local -a options=(
+    'from registry   escolhe módulo(s) do índice remoto configurado'
+    'from file       instala a partir de um tarball local (sem rede)'
+    'from url        instala direto de um repositório git'
+  )
+  local -a keys=(registry file url)
+
+  if ! tui::select 'modules install — de onde?' "${options[@]}"; then
+    return 0
+  fi
+  local i chosen=''
+  for ((i = 0; i < ${#options[@]}; i++)); do
+    if [[ ${options[i]} == "$TUI_CHOICE" ]]; then
+      chosen=${keys[i]}
+      break
+    fi
+  done
+
+  case $chosen in
+    registry)
+      # sem nomes, modules::cmd_install já mostra o checklist do que ainda não está instalado.
+      modules::cmd_install || true
+      ;;
+    file)
+      if ! tui::input 'caminho do tarball'; then
+        printf 'cancelado.\n'
+        return 0
+      fi
+      modules::cmd_install --file "$TUI_INPUT" || true
+      ;;
+    url)
+      if ! tui::input 'URL do repositório git (ex: https://.../repo.git)'; then
+        printf 'cancelado.\n'
+        return 0
+      fi
+      local url=$TUI_INPUT ref=''
+      tui::input 'ref — tag/branch/commit (opcional, enter pra pular)' && ref=$TUI_INPUT
+      if [[ -n $ref ]]; then
+        modules::cmd_install "$url" --ref "$ref" || true
+      else
+        modules::cmd_install "$url" || true
+      fi
+      ;;
+  esac
+  return 0
+}
+
+modules::_interactive_remove() {
+  pvx::require tui exec
+
+  local -a names=()
+  mapfile -t names < <(modules::_installed_names)
+  if ((${#names[@]} == 0)); then
+    printf 'nenhum módulo instalado.\n'
+    return 0
+  fi
+
+  if ! tui::select 'remover qual módulo?' "${names[@]}"; then
+    return 0
+  fi
+  local name=$TUI_CHOICE
+
+  if ! exec::confirm "remover '$name'? [y/N]" n; then
+    printf 'cancelado.\n'
+    return 0
+  fi
+  modules::cmd_remove "$name" || true
+  return 0
+}
+
+modules::_interactive_update() {
+  pvx::require tui
+
+  local -a picks=('todos (--all)')
+  local -a names=()
+  mapfile -t names < <(modules::_installed_names)
+  picks+=("${names[@]}")
+
+  if ((${#names[@]} == 0)); then
+    printf 'nenhum módulo instalado — nada pra atualizar.\n'
+    return 0
+  fi
+
+  if ! tui::select 'atualizar qual módulo?' "${picks[@]}"; then
+    return 0
+  fi
+  if [[ $TUI_CHOICE == 'todos (--all)' ]]; then
+    modules::cmd_update --all || true
+  else
+    modules::cmd_update "$TUI_CHOICE" || true
+  fi
+  return 0
+}
+
+modules::_interactive_help() {
+  pvx::require tui
+
+  local -a names=()
+  mapfile -t names < <(modules::_installed_names)
+  if ((${#names[@]} == 0)); then
+    printf 'nenhum módulo instalado.\n'
+    return 0
+  fi
+
+  if ! tui::select 'ajuda de qual módulo?' "${names[@]}"; then
+    return 0
+  fi
+  modules::cmd_help "$TUI_CHOICE" || true
+  return 0
 }
 
 # --- list -------------------------------------------------------------------------------------

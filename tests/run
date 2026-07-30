@@ -20,10 +20,8 @@ export PVX_ROOT PVX_LIB_DIR
 
 # shellcheck source=/dev/null
 source "$PVX_LIB_DIR/bootstrap.sh"
-pvx::require color
+pvx::require color tui
 color::init
-# shellcheck source=/dev/null
-source "$_RUN_DIR/lib/menu.sh"
 
 UNIT_DIR="$_RUN_DIR/unit"
 SUITE_DIR="$_RUN_DIR/suites"
@@ -138,23 +136,23 @@ else
     exit 1
   fi
 
-  if ! menu::select 'o que você quer rodar?' "${CAT_LABELS[@]}"; then
+  if ! tui::select 'o que você quer rodar?' "${CAT_LABELS[@]}"; then
     printf 'cancelado.\n'
     exit 0
   fi
 
   idx=0
   for ((idx = 0; idx < ${#CAT_LABELS[@]}; idx++)); do
-    [[ ${CAT_LABELS[idx]} == "$MENU_CHOICE" ]] || continue
+    [[ ${CAT_LABELS[idx]} == "$TUI_CHOICE" ]] || continue
     case ${CAT_KEYS[idx]} in
       units)
-        if menu::checklist 'quais testes de unidade você quer rodar?' "${UNIT_NAMES[@]}"; then
-          run::_queue units "$UNIT_DIR" "${MENU_RESULT[@]+"${MENU_RESULT[@]}"}"
+        if tui::checklist 'quais testes de unidade você quer rodar?' "${UNIT_NAMES[@]}"; then
+          run::_queue units "$UNIT_DIR" "${TUI_RESULT[@]+"${TUI_RESULT[@]}"}"
         fi
         ;;
       suites)
-        if menu::checklist 'quais suites você quer rodar?' "${SUITE_NAMES[@]}"; then
-          run::_queue suites "$SUITE_DIR" "${MENU_RESULT[@]+"${MENU_RESULT[@]}"}"
+        if tui::checklist 'quais suites você quer rodar?' "${SUITE_NAMES[@]}"; then
+          run::_queue suites "$SUITE_DIR" "${TUI_RESULT[@]+"${TUI_RESULT[@]}"}"
         fi
         ;;
     esac

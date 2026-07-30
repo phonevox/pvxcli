@@ -133,6 +133,86 @@ tui::_select_fallback() {
   done
 }
 
+# tui::pause [<label>] — pausa depois de uma ação que já imprimiu algo, antes de redesenhar o
+# menu que chamou. Uma tecla só, sem precisar de enter: qualquer tecla comum continua
+# (TUI_BACK=0); 'q'/'Q'/ESC volta (TUI_BACK=1) — o chamador decide o que "voltar" significa
+# (tipicamente: sair do loop do submenu atual, um nível pra cima). Sem TTY, cai num modo texto
+# por linha (mesma convenção do resto deste arquivo).
+tui::pause() {
+  local label=${1:-'pressione enter pra continuar (q/esc volta)'}
+  TUI_BACK=0
+
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    printf '\n%s%s%s\n' "${PVX_C[gray]:-}" "$label" "${PVX_C[reset]:-}"
+    local resp=''
+    if ! IFS= read -r resp; then
+      TUI_BACK=1
+      return 0
+    fi
+    [[ $resp == q || $resp == Q ]] && TUI_BACK=1
+    return 0
+  fi
+
+  printf '\n%s%s%s' "${PVX_C[gray]:-}" "$label" "${PVX_C[reset]:-}"
+  local stty_saved='' key='' key2=''
+  stty_saved=$(stty -g 2>/dev/null) || stty_saved=''
+  stty -echo -icanon min 1 time 0 2>/dev/null || true
+
+  tui::_pause_restore() {
+    [[ -n ${stty_saved:-} ]] && stty "$stty_saved" 2>/dev/null
+    return 0
+  }
+  trap tui::_pause_restore RETURN INT TERM
+
+  if ! IFS= read -rsn1 key; then
+    key=q
+  elif [[ $key == $'\x1b' ]]; then
+    key2=''
+    IFS= read -rsn1 -t 0.05 key2 || true
+    [[ -n $key2 ]] && key=$key2 # era um arrow/outra sequência — ignora, trata como "continuar"
+  fi
+
+  trap - RETURN INT TERM
+  tui::_pause_restore
+  printf '\n'
+
+  case $key in
+    q | Q | $'\x1b')
+      # shellcheck disable=SC2034 # lido pelo chamador depois que esta função retorna
+      TUI_BACK=1
+      ;;
+  esac
+  return 0
+}
+
+# tui::input <label> [default] — prompt de texto livre (caminho, URL, etc.). Resultado em
+# TUI_INPUT. Linha vazia usa o <default>, se houver; sem default, linha vazia ou EOF (Ctrl-D)
+# cancela (rc=1) — não trava esperando teclado num pipe fechado (ex: stdin de /dev/null).
+tui::input() {
+  local label=$1 default=${2:-}
+  local prompt line
+
+  TUI_INPUT=''
+  if [[ -n $default ]]; then
+    printf -v prompt '%s [%s]: ' "$label" "$default"
+  else
+    printf -v prompt '%s: ' "$label"
+  fi
+
+  line=''
+  if ! IFS= read -r -p "$prompt" line; then
+    return 1
+  fi
+  if [[ -z $line ]]; then
+    [[ -z $default ]] && return 1
+    TUI_INPUT=$default
+    return 0
+  fi
+  # shellcheck disable=SC2034 # lido pelo chamador depois que esta função retorna
+  TUI_INPUT=$line
+  return 0
+}
+
 # tui::checklist <título> <item1> [item2 ...]
 tui::checklist() {
   local title=$1
