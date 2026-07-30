@@ -61,7 +61,7 @@ core::_completion_interactive_menu() {
   )
   local -a keys=(auto show)
 
-  if ! tui::select 'pvx completion — o que você quer fazer?' "${options[@]}"; then
+  if ! tui::select "$(tui::breadcrumb completion)" "${options[@]}"; then
     return 0
   fi
   local i chosen=''
@@ -108,6 +108,7 @@ core::_completion_interactive_menu() {
 # Requer root, igual ao resto do pvx (`registry set`, etc.): sem privilégio, avisa e volta —
 # não tenta escalar sozinho via sudo.
 core::_completion_auto_install() {
+  pvx::require exec
   if ! os::is_root; then
     log::error 'completion (instalação automática) requer privilégios de root (rodando como uid %d)' "$EUID"
     log::hint 'tente: sudo pvx completion'
@@ -126,9 +127,22 @@ core::_completion_auto_install() {
     printf 'sem precisar abrir um shell novo nem dar source em nada.\n'
   else
     local mgr
-    mgr=$(os::pkg_manager 2>/dev/null) || mgr='<gerenciador de pacotes>'
-    log::warn 'pacote bash-completion não encontrado nesta central — sem ele, o carregamento sob demanda não funciona'
-    log::hint 'instale com: %s install bash-completion (uma vez só; depois disso o completion do pvx já funciona sozinho)' "$mgr"
+    mgr=$(os::pkg_manager 2>/dev/null) || mgr=''
+    # log::info, não log::warn: a pessoa já escolheu "instalar automaticamente" — achar a
+    # dependência faltando faz parte do fluxo normal dessa escolha, não é um alerta de algo
+    # ter dado errado.
+    log::info 'pacote bash-completion não encontrado nesta central — tentando instalar'
+    if [[ -z $mgr ]]; then
+      log::hint 'instale o pacote "bash-completion" manualmente (nenhum gerenciador de pacotes conhecido foi encontrado)'
+    elif exec::confirm 'instalar o pacote bash-completion agora? [Y/n]' y; then
+      if os::pkg_install bash-completion; then
+        printf 'bash-completion instalado — o completion do pvx já funciona sozinho a partir de agora.\n'
+      else
+        log::error 'falha ao instalar bash-completion — instale manualmente: %s install bash-completion' "$mgr"
+      fi
+    else
+      log::hint 'instale quando quiser com: %s install bash-completion (uma vez só; depois disso o completion do pvx já funciona sozinho)' "$mgr"
+    fi
   fi
   return 0
 }

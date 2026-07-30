@@ -9,6 +9,22 @@
 # Ambas: 'q'/ESC/Ctrl-C cancela (rc=1). Sem TTY em stdin/stdout (pipe, cron, CI) cai num modo
 # texto por número — nunca trava esperando teclas de terminal num ambiente não-interativo.
 
+# tui::breadcrumb [segmento1 segmento2 ...] — monta "HOME > seg1 > ... > segN" pra usar como
+# <título> de tui::select/tui::checklist nos submenus do pvx, com o último segmento (a página
+# atual) em destaque — sem argumento nenhum, é só "HOME".
+tui::breadcrumb() {
+  local -a segs=("$@")
+  local n=${#segs[@]} i out='pvx'
+  for ((i = 0; i < n; i++)); do
+    if ((i == n - 1)); then
+      out+=" > ${PVX_C[cyan]:-}${segs[i]}${PVX_C[reset]:-}"
+    else
+      out+=" > ${segs[i]}"
+    fi
+  done
+  printf '%s' "$out"
+}
+
 # tui::select <título> <item1> [item2 ...]
 tui::select() {
   local title=$1
@@ -69,7 +85,7 @@ tui::_select_tty() {
         printf '    %s\n' "${items[i]}"
       fi
     done
-    printf '  %s↑/↓ (j/k) navega · enter escolhe · q cancela%s\n' "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
+    printf '  %s↑/↓ · enter confirma · ctrl+c cancela%s\n' "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
     rows_drawn=$((n + 2))
 
     key=''
@@ -211,10 +227,18 @@ tui::input() {
     printf -v prompt '%s: ' "$label"
   fi
 
+  # Ctrl-C aqui é um `read` comum (modo cozido, sem stty pra restaurar) — sem este trap, o
+  # trap GLOBAL do processo (pvx::install_traps) mataria o pvx inteiro no meio de um prompt de
+  # texto, em vez de só cancelar este input e devolver pro chamador, igual a
+  # tui::select/checklist/pause.
+  trap 'trap - INT TERM; printf "\n"; TUI_INPUT=""; return 1' INT TERM
+
   line=''
   if ! IFS= read -r -p "$prompt" line; then
+    trap - INT TERM
     return 1
   fi
+  trap - INT TERM
   if [[ -z $line ]]; then
     [[ -z $default ]] && return 1
     TUI_INPUT=$default
@@ -283,7 +307,7 @@ tui::_checklist_tty() {
         printf '    [%s] %s\n' "$mark" "${items[i]}"
       fi
     done
-    printf '  %s↑/↓ (j/k) navega · espaço marca · a marca/desmarca tudo · enter confirma · q cancela%s\n' \
+    printf '  %s↑/↓ · espaço marca · a marca/desmarca tudo · enter confirma · ctrl+c cancela%s\n' \
       "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
     rows_drawn=$((n + 2))
 

@@ -72,9 +72,9 @@ modules::_interactive_menu() {
   )
   local -a keys=(list install remove update help)
 
-  local i chosen
+  local i chosen sub_rc
   while true; do
-    if ! tui::select 'pvx modules — o que você quer fazer?' "${options[@]}"; then
+    if ! tui::select "$(tui::breadcrumb modules)" "${options[@]}"; then
       return 0
     fi
     chosen=''
@@ -87,18 +87,29 @@ modules::_interactive_menu() {
     [[ -z $chosen ]] && continue
 
     printf '\n'
-    # "|| true" em cada ramo de propósito: essas funções já imprimem seu próprio log::error
-    # antes de retornar rc≠0 (ex: update sem registry alcançável) — sem o "|| true", esse rc
+    # "|| sub_rc=$?" em cada ramo de propósito: essas funções já imprimem seu próprio
+    # log::error antes de retornar rc≠0 (ex: update sem registry alcançável) — sem isso, o rc
     # vazaria como comando solto sob `set -e` e derrubaria o pvx inteiro no meio do menu, em
     # vez de só mostrar o erro e voltar pro mesmo submenu (achado testando de verdade no
-    # container: `modules update` com registry indisponível crashava a sessão inteira).
+    # container: `modules update` com registry indisponível crashava a sessão inteira). rc=90
+    # é o sentinel interno "cancelei o picker sem fazer/mostrar nada" (ver
+    # modules::_interactive_install/_remove/_update/_help) — nesse caso pula a pausa embaixo.
+    sub_rc=0
     case $chosen in
       list) modules::cmd_list || true ;;
-      install) modules::_interactive_install || true ;;
-      remove) modules::_interactive_remove || true ;;
-      update) modules::_interactive_update || true ;;
-      help) modules::_interactive_help || true ;;
+      install) modules::_interactive_install || sub_rc=$? ;;
+      remove) modules::_interactive_remove || sub_rc=$? ;;
+      update) modules::_interactive_update || sub_rc=$? ;;
+      help) modules::_interactive_help || sub_rc=$? ;;
     esac
+
+    # list é só leitura, sem nada demorado, e um picker cancelado sem mostrar nada (rc=90)
+    # também não precisa de pausa nenhuma — voltam direto (mesma lógica de sysinfo/help/version
+    # no menu principal).
+    if [[ $chosen == list ]] || ((sub_rc == 90)); then
+      printf '\n'
+      continue
+    fi
 
     tui::pause 'pressione enter pra continuar (q/esc volta)'
     ((TUI_BACK)) && return 0
@@ -125,8 +136,8 @@ modules::_interactive_install() {
   )
   local -a keys=(registry file url)
 
-  if ! tui::select 'modules install — de onde?' "${options[@]}"; then
-    return 0
+  if ! tui::select "$(tui::breadcrumb modules install)" "${options[@]}"; then
+    return 90 # cancelado sem mostrar nada — ver o comentário em modules::_interactive_menu
   fi
   local i chosen=''
   for ((i = 0; i < ${#options[@]}; i++)); do
@@ -175,8 +186,8 @@ modules::_interactive_remove() {
     return 0
   fi
 
-  if ! tui::select 'remover qual módulo?' "${names[@]}"; then
-    return 0
+  if ! tui::select "$(tui::breadcrumb modules remove)" "${names[@]}"; then
+    return 90 # cancelado sem mostrar nada — ver o comentário em modules::_interactive_menu
   fi
   local name=$TUI_CHOICE
 
@@ -201,8 +212,8 @@ modules::_interactive_update() {
     return 0
   fi
 
-  if ! tui::select 'atualizar qual módulo?' "${picks[@]}"; then
-    return 0
+  if ! tui::select "$(tui::breadcrumb modules update)" "${picks[@]}"; then
+    return 90 # cancelado sem mostrar nada — ver o comentário em modules::_interactive_menu
   fi
   if [[ $TUI_CHOICE == 'todos (--all)' ]]; then
     modules::cmd_update --all || true
@@ -222,8 +233,8 @@ modules::_interactive_help() {
     return 0
   fi
 
-  if ! tui::select 'ajuda de qual módulo?' "${names[@]}"; then
-    return 0
+  if ! tui::select "$(tui::breadcrumb modules help)" "${names[@]}"; then
+    return 90 # cancelado sem mostrar nada — ver o comentário em modules::_interactive_menu
   fi
   modules::cmd_help "$TUI_CHOICE" || true
   return 0

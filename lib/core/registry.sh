@@ -30,7 +30,7 @@ core::cmd_registry() {
 
 # --- submenu interativo (`pvx registry` sem subcomando, com TTY) -----------------------------
 core::_registry_interactive_menu() {
-  pvx::require tui
+  pvx::require tui exec
 
   local -a options=(
     'status           mostra URL do registry, estado do cache e contagem de módulos'
@@ -41,9 +41,9 @@ core::_registry_interactive_menu() {
   )
   local -a keys=(status list refresh refresh-force set)
 
-  local i chosen
+  local i chosen sub_rc
   while true; do
-    if ! tui::select 'pvx registry — o que você quer fazer?' "${options[@]}"; then
+    if ! tui::select "$(tui::breadcrumb registry)" "${options[@]}"; then
       return 0
     fi
     chosen=''
@@ -56,17 +56,35 @@ core::_registry_interactive_menu() {
     [[ -z $chosen ]] && continue
 
     printf '\n'
-    # "|| true" em cada ramo: essas funções já logam seu próprio erro antes de retornar rc≠0
-    # (ex: refresh sem rede/cache) — sem isso, o rc vazaria como comando solto sob `set -e` e
-    # derrubaria o pvx inteiro em vez de só mostrar o erro e voltar pro mesmo submenu (mesmo
-    # achado de lib/cmd_modules.sh, testado de verdade no container).
+    # "|| sub_rc=$?" em cada ramo: essas funções já logam seu próprio erro antes de retornar
+    # rc≠0 (ex: refresh sem rede/cache) — sem isso, o rc vazaria como comando solto sob `set -e`
+    # e derrubaria o pvx inteiro em vez de só mostrar o erro e voltar pro mesmo submenu (mesmo
+    # achado de lib/cmd_modules.sh, testado de verdade no container). rc=90 é o sentinel
+    # interno "cancelei sem fazer/mostrar nada de útil" (ver core::_registry_interactive_set) —
+    # nesse caso pula a pausa embaixo, igual list/status/refresh.
+    sub_rc=0
     case $chosen in
       status) core::_registry_status || true ;;
       list) core::_registry_list || true ;;
       refresh) core::_registry_refresh || true ;;
-      refresh-force) core::_registry_refresh --force || true ;;
-      set) core::_registry_interactive_set || true ;;
+      refresh-force)
+        if exec::confirm 'forçar o refresh, ignorando o cache ainda válido? [y/N]' n; then
+          core::_registry_refresh --force || true
+        else
+          printf 'cancelado.\n'
+        fi
+        ;;
+      set) core::_registry_interactive_set || sub_rc=$? ;;
     esac
+
+    # status/list/refresh(--force) são só leitura/rápidos — voltam direto, sem pausa (mesma
+    # lógica de sysinfo/help/version no menu principal e de "modules list"). "set" cancelado
+    # sem fazer/mostrar nada de útil (rc=90) também volta direto; só um "set" bem-sucedido (ou
+    # o erro de "precisa de root") pausa pra dar tempo de ler.
+    if [[ $chosen != set ]] || ((sub_rc == 90)); then
+      printf '\n'
+      continue
+    fi
 
     tui::pause 'pressione enter pra continuar (q/esc volta)'
     ((TUI_BACK)) && return 0
@@ -83,12 +101,18 @@ core::_registry_interactive_set() {
     log::hint 'tente: sudo pvx registry set <url>'
     return 0
   fi
-  if ! tui::input 'nova URL do registry (file:// ou http(s)://)'; then
-    printf 'cancelado.\n'
-    return 0
-  fi
-  core::_registry_set "$TUI_INPUT" || true
-  return 0
+  # loop: URL inválida reprompta na hora (core::_registry_set já logou o erro) em vez de
+  # devolver pro submenu e obrigar escolher "set" de novo só pra corrigir um typo. Ctrl-C no
+  # tui::input cancela e volta pro submenu normalmente (ver o trap em lib/tui.sh). rc=90 (sem
+  # ter feito/mostrado nada de útil) faz o chamador pular a pausa — ver
+  # core::_registry_interactive_menu.
+  while true; do
+    if ! tui::input 'nova URL do registry (file:// ou http(s)://)'; then
+      printf 'cancelado.\n'
+      return 90
+    fi
+    core::_registry_set "$TUI_INPUT" && return 0
+  done
 }
 
 core::_registry_usage() {

@@ -133,6 +133,26 @@ core::_suggest() {
 core::_interactive_menu() {
   pvx::require tui
 
+  # rede de segurança: cada tui::select/checklist/pause já restaura a própria stty sozinho no
+  # caminho normal (inclusive em Ctrl-C, ver o comentário em tui::_select_tty) — isso aqui é só
+  # a garantia de que, mesmo se algum bug/corrida escapar disso em qualquer nível de submenu, o
+  # terminal nunca fica preso em modo raw depois que o pvx sai: captura o estado UMA vez ao
+  # entrar no menu, e devolve no exit do processo, não importa por onde ele saiu.
+  #
+  # SEM "local" de propósito: o hook de exit só roda DEPOIS que esta função já retornou (o
+  # `trap EXIT` dispara no fim do processo inteiro, não no fim desta função) — uma variável
+  # `local` já teria saído de escopo a essa altura, e o hook quebraria com "unbound variable"
+  # sob `set -u` (achado de verdade rodando no container: o hook falhava antes até de chegar
+  # no `stty`, deixando o terminal exatamente tão travado quanto sem rede de segurança nenhuma).
+  PVX_MENU_STTY_SAVED=$(stty -g 2>/dev/null) || PVX_MENU_STTY_SAVED=''
+  if [[ -n $PVX_MENU_STTY_SAVED ]]; then
+    core::_menu_stty_restore() {
+      stty "$PVX_MENU_STTY_SAVED" 2>/dev/null || true
+      return 0
+    }
+    pvx::on_exit core::_menu_stty_restore
+  fi
+
   local -A descriptions=(
     [modules]='gerencia módulos instaláveis (list/install/remove/update/help)'
     [registry]='consulta/configura o índice remoto de módulos'
@@ -208,7 +228,7 @@ core::_interactive_menu() {
 
   local i chosen_cmd
   while true; do
-    if ! tui::select 'pvx — o que você quer fazer?' "${options[@]}"; then
+    if ! tui::select "$(tui::breadcrumb)" "${options[@]}"; then
       return 0
     fi
     chosen_cmd=''
@@ -234,7 +254,7 @@ core::_interactive_menu() {
       continue
     fi
 
-    tui::pause 'pressione enter pra voltar ao menu (q/esc sai)'
+    tui::pause 'pressione qualquer tecla para continuar'
     ((TUI_BACK)) && return 0
   done
 }
@@ -407,6 +427,34 @@ acompanhar seus logs em tempo real, ex: pvx modules logs
 EOF
 }
 
+# core::_maybe_show_ascii_art — mostra ASCII.txt (raiz do pvx-core) uma vez por CHAMADA de
+# `pvx` a partir do shell (terminal interativo de verdade nos dois lados) — não por processo:
+# navegar o menu despacha comandos-folha (tests/sysinfo/help/version/módulo) como subprocesso
+# novo (ver "$PVX_BIN_DIR/pvx" "$chosen_cmd" em core::_interactive_menu), e cada um deles
+# passa por aqui de novo — sem essa marca, escolher "tests" no menu, por exemplo, jogaria a
+# ascii de novo no meio da navegação, o que não faz sentido (achado de verdade testando no
+# container). PVX_ASCII_SHOWN exportado aqui é herdado por esses subprocessos-filhos e os faz
+# pular a exibição; uma invocação NOVA de `pvx` direto do shell não tem essa variável no
+# ambiente (cada `pvx` digitado é um processo raiz próprio) e mostra de novo, normalmente.
+#
+# A flag oculta --loadascii <arquivo> (não documentada em --help, de propósito) ignora tudo
+# isso e força a exibição com o arquivo escolhido, mesmo sem terminal — útil pra testar a
+# arte. Nunca falha se o arquivo não existir (ex: checkout sem ASCII.txt ainda) — só não mostra.
+core::_maybe_show_ascii_art() {
+  local file=${PVX_LOADASCII_FILE:-}
+  if [[ -z $file ]]; then
+    [[ -n ${PVX_ASCII_SHOWN:-} ]] && return 0
+    [[ -t 0 && -t 1 ]] || return 0
+    file="$PVX_ROOT/ASCII.txt"
+  fi
+
+  [[ -r $file ]] || return 0
+  cat "$file"
+  printf '\n'
+  [[ -z ${PVX_LOADASCII_FILE:-} ]] && export PVX_ASCII_SHOWN=1
+  return 0
+}
+
 main() {
   local -a argv=("$@")
   local -a rest=()
@@ -447,6 +495,10 @@ main() {
       -y | --yes) PVX_ASSUME_YES=1 ;;
       --offline) PVX_OFFLINE=1 ;;
       --config) i=$((i + 1)) ;; # valor já consumido no pré-scan
+      --loadascii)
+        PVX_LOADASCII_FILE=${argv[i+1]:-}
+        i=$((i + 1))
+        ;;
       --)
         i=$((i + 1))
         while (( i < ${#argv[@]} )); do
@@ -470,6 +522,8 @@ main() {
     i=$((i + 1))
   done
   export PVX_DRY_RUN PVX_ASSUME_YES PVX_OFFLINE
+
+  core::_maybe_show_ascii_art
 
   local cmd=${rest[0]:-}
   local -a cmd_args=(${rest[@]+"${rest[@]:1}"})
