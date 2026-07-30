@@ -22,7 +22,14 @@ test_02_has_detecta_existente() { assert_true 'has detecta chave existente' path
 test_03_has_nao_detecta_inexistente() { assert_false 'has não detecta chave inexistente' path::has chave_bobagem; }
 assert_flush
 
-test_04_exists_falso_sem_filesystem() { assert_false 'exists é falso pra caminho que não existe no filesystem' path::exists pvx_root; }
+# chave própria do teste, não "pvx_root": /opt/pvx é o caminho real de instalação do pvx e
+# PODE existir de verdade na máquina rodando este teste (ex: já rodou install.sh) — usar a
+# chave real aqui faria o teste depender de um estado externo do filesystem que nem sempre é
+# verdade, em vez de testar path::exists isoladamente.
+path::set _chave_teste_caminho_ausente /pvx-teste-caminho-que-definitivamente-nao-existe
+test_04_exists_falso_sem_filesystem() {
+  assert_false 'exists é falso pra caminho que não existe no filesystem' path::exists _chave_teste_caminho_ausente
+}
 assert_flush
 
 path::set minha_chave /tmp/pvx-teste-paths

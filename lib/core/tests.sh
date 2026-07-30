@@ -5,12 +5,25 @@
 core::cmd_tests() {
   local runner="$PVX_ROOT/tests/run"
   if [[ ! -x $runner ]]; then
-    # tests/ é excluído de propósito de qualquer instalação via install.sh (só faz sentido num
-    # checkout de dev) — não é uma instalação quebrada, é o comportamento esperado de uma
-    # central com o pvx instalado normalmente. Ver o comentário equivalente em install.sh.
-    log::error '"pvx tests" só está disponível rodando a partir de um checkout de desenvolvimento (tests/ não é copiado numa instalação via install.sh)'
+    # install.sh copia tests/ de propósito (ver o comentário lá) — "pvx tests" é ferramenta de
+    # diagnóstico da própria central, não só de desenvolvimento do pvx-core, então precisa
+    # continuar funcionando depois de instalado. Só chega aqui num release antigo (de antes
+    # disso) ou numa instalação manual/incompleta que não seguiu o install.sh.
+    log::error 'tests/ ausente nesta instalação (%s) — release antigo ou instalação incompleta; reinstale com uma versão mais nova do pvx-core' \
+      "$PVX_ROOT"
     return "$PVX_EXIT_UNAVAILABLE"
   fi
+
+  # bin/pvx já exportou PVX_STATE_DIR/PVX_CACHE_DIR/PVX_ETC_DIR/PVX_MODULES_DIR (e
+  # PVX_ROOT_PREFIX) pro ambiente de quem chamou "pvx tests" — mas lib/registry.sh e
+  # lib/paths.sh só preenchem essas variáveis com `${VAR:-default}`, então, se já estiverem
+  # setadas (herdadas), tests/run e o que ele roda (ex: suites/smoke.sh, que monta o próprio
+  # sandbox via PVX_ROOT_PREFIX) NUNCA recalculariam o valor certo — ficariam presos nos
+  # caminhos REAIS do sistema, vazando estado de fora pra dentro do teste. Achado de verdade
+  # rodando `pvx tests run all` numa central com o pvx instalado: suites/smoke.sh escrevia
+  # (e lia) em /var/lib/pvx real em vez do sandbox isolado dele. Limpa aqui — cada teste
+  # recomeça do zero e decide seu próprio isolamento (ou a falta dele) sozinho.
+  unset PVX_ROOT_PREFIX PVX_STATE_DIR PVX_CACHE_DIR PVX_ETC_DIR PVX_MODULES_DIR
 
   local sub=${1:-}
   case $sub in

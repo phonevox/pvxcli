@@ -38,12 +38,15 @@ mkdir -p "$PREFIX/releases"
 rm -rf "$release_dir"
 mkdir -p "$release_dir"
 
-# copia o checkout excluindo o que não faz sentido num sistema instalado: .git (histórico,
-# não runtime), dist/ (build output regenerável), learning-materials/ e tests/ (só de dev),
-# modules/ (só tem o fixture "dummy" — módulos de verdade se instalam via `pvx modules
-# install`, não vêm embutidos no core).
+# copia o checkout excluindo só o que não faz sentido num sistema instalado: .git (histórico,
+# não runtime), dist/ (build output regenerável) e learning-materials/ (repos de referência só
+# de dev). tests/ e modules/ VÃO junto de propósito: `pvx tests` precisa continuar funcionando
+# numa central com o pvx já instalado (é ferramenta de diagnóstico da própria central, não só
+# de desenvolvimento do pvx-core) — e boa parte de tests/ (suites/smoke, parte de
+# units/registry) depende do fixture "dummy" em modules/dummy pra rodar; excluir um sem o
+# outro deixaria "pvx tests" instalado, mas falhando.
 tar -C "$SRC_ROOT" -cf - \
-  --exclude=.git --exclude=dist --exclude=learning-materials --exclude=tests --exclude=modules \
+  --exclude=.git --exclude=dist --exclude=learning-materials \
   . | tar -C "$release_dir" -xf -
 
 ln -sfn "$release_dir" "$PREFIX/current"

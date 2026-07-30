@@ -147,9 +147,9 @@ core::_interactive_menu() {
   local c
 
   for c in "${order[@]}"; do
-    # "tests" só faz sentido num checkout de dev (tests/ nunca é copiado por install.sh — ver
-    # o comentário em install.sh e em lib/core/tests.sh) — numa central com o pvx instalado
-    # normalmente, nem mostra a opção, em vez de listar algo que sempre daria erro.
+    # install.sh copia tests/ de propósito — numa instalação normal esta checagem sempre
+    # passa. Só falta em release antigo/instalação incompleta (ver lib/core/tests.sh); nesse
+    # caso, esconde a opção em vez de listar algo que sempre daria erro.
     [[ $c == tests && ! -x "$PVX_ROOT/tests/run" ]] && continue
     if [[ -n ${PVX_CORE_CMDS[$c]:-} ]] || [[ -r "$PVX_ROOT/share/pvx/snippets/$c.sh" ]]; then
       options+=("$(printf '%-12s %s' "$c" "${descriptions[$c]:-}")")
@@ -200,6 +200,12 @@ core::_interactive_menu() {
   # depois de voltar de um submenu cancelado.
   local -A owned_submenus=([modules]=1 [registry]=1 [completion]=1)
 
+  # Esses três têm saída curta e nenhum estado próprio pra ler com calma (diferente de
+  # "tests", que abre o próprio menu multi-tela do tests/run, ou de um módulo instalado, cuja
+  # saída pode ser longa/importante de ler) — voltam pro menu principal sozinhos, sem precisar
+  # de nenhuma tecla.
+  local -A instant_return=([sysinfo]=1 [help]=1 [version]=1)
+
   local i chosen_cmd
   while true; do
     if ! tui::select 'pvx — o que você quer fazer?' "${options[@]}"; then
@@ -222,6 +228,10 @@ core::_interactive_menu() {
     fi
 
     "$PVX_BIN_DIR/pvx" "$chosen_cmd"
+
+    if [[ -n ${instant_return[$chosen_cmd]:-} ]]; then
+      continue
+    fi
 
     tui::pause 'pressione enter pra voltar ao menu (q/esc sai)'
     ((TUI_BACK)) && return 0
