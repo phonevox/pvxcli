@@ -6,8 +6,8 @@
 # tui::select    — escolha única, navegação ↑/↓, enter escolhe na hora. Resultado em TUI_CHOICE.
 # tui::checklist — seleção múltipla, espaço marca/desmarca, enter confirma. Resultado no array
 #                  TUI_RESULT (mesma ordem dos itens recebidos).
-# Ambas: 'q'/ESC cancela (rc=1). Sem TTY em stdin/stdout (pipe, cron, CI) cai num modo texto
-# por número — nunca trava esperando teclas de terminal num ambiente não-interativo.
+# Ambas: 'q'/ESC/Ctrl-C cancela (rc=1). Sem TTY em stdin/stdout (pipe, cron, CI) cai num modo
+# texto por número — nunca trava esperando teclas de terminal num ambiente não-interativo.
 
 # tui::select <título> <item1> [item2 ...]
 tui::select() {
@@ -44,7 +44,16 @@ tui::_select_tty() {
     [[ -n ${stty_saved:-} ]] && stty "$stty_saved" 2>/dev/null
     return 0
   }
-  trap tui::_select_tty_restore RETURN INT TERM
+  trap tui::_select_tty_restore RETURN
+  # INT/TERM à parte, de propósito: um trap que só CHAMA outra função e dá `return` de dentro
+  # dela só retorna dessa função-filha — não do loop bloqueado no `read` lá embaixo. O `read`
+  # reinicia sozinho depois que o trap termina (restart de syscall do bash), e como a stty já
+  # foi restaurada (echo ligado de novo) mas o loop continua rodando, toda tecla seguinte
+  # (inclusive mais Ctrl-C) só aparece como texto puro na tela, sem fazer nada — reproduzido de
+  # verdade pressionando Ctrl-C no menu interativo. O `return` precisa estar na própria string
+  # do trap (não numa função chamada por ele) pra de fato encerrar ESTA função no ponto da
+  # interrupção; começa limpando os três traps pra não deixar um handler obsoleto pra trás.
+  trap 'trap - INT TERM RETURN; tui::_select_tty_restore; printf "\n"; TUI_CHOICE=""; return 1' INT TERM
 
   while true; do
     if ((rows_drawn > 0)); then
@@ -135,7 +144,7 @@ tui::_select_fallback() {
 
 # tui::pause [<label>] — pausa depois de uma ação que já imprimiu algo, antes de redesenhar o
 # menu que chamou. Uma tecla só, sem precisar de enter: qualquer tecla comum continua
-# (TUI_BACK=0); 'q'/'Q'/ESC volta (TUI_BACK=1) — o chamador decide o que "voltar" significa
+# (TUI_BACK=0); 'q'/'Q'/ESC/Ctrl-C volta (TUI_BACK=1) — o chamador decide o que "voltar" significa
 # (tipicamente: sair do loop do submenu atual, um nível pra cima). Sem TTY, cai num modo texto
 # por linha (mesma convenção do resto deste arquivo).
 tui::pause() {
@@ -162,7 +171,10 @@ tui::pause() {
     [[ -n ${stty_saved:-} ]] && stty "$stty_saved" 2>/dev/null
     return 0
   }
-  trap tui::_pause_restore RETURN INT TERM
+  trap tui::_pause_restore RETURN
+  # INT/TERM à parte — ver o comentário equivalente em tui::_select_tty. Ctrl-C aqui é
+  # tratado igual a 'q' (TUI_BACK=1), não como falha: tui::pause sempre retorna 0.
+  trap 'trap - INT TERM RETURN; tui::_pause_restore; printf "\n"; TUI_BACK=1; return 0' INT TERM
 
   if ! IFS= read -rsn1 key; then
     key=q
@@ -251,7 +263,9 @@ tui::_checklist_tty() {
     [[ -n ${stty_saved:-} ]] && stty "$stty_saved" 2>/dev/null
     return 0
   }
-  trap tui::_checklist_tty_restore RETURN INT TERM
+  trap tui::_checklist_tty_restore RETURN
+  # INT/TERM à parte — ver o comentário equivalente em tui::_select_tty.
+  trap 'trap - INT TERM RETURN; tui::_checklist_tty_restore; printf "\n"; TUI_RESULT=(); return 1' INT TERM
 
   while true; do
     if ((rows_drawn > 0)); then
