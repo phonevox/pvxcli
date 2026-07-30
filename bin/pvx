@@ -230,6 +230,7 @@ core::_interactive_menu() {
     "$PVX_BIN_DIR/pvx" "$chosen_cmd"
 
     if [[ -n ${instant_return[$chosen_cmd]:-} ]]; then
+      printf '\n'
       continue
     fi
 
