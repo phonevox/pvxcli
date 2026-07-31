@@ -252,7 +252,12 @@ core::_interactive_menu() {
       continue
     fi
 
-    "$PVX_BIN_DIR/pvx" "$chosen_cmd"
+    # "|| true" de propósito: sob set -e, um comando solto que retorna != 0 derruba o processo
+    # inteiro pela trap de ERR em vez de só terminar o comando escolhido — mesma classe de bug
+    # já corrigida nos submenus de modules/registry/completion (ver docs/interactive-menu-spec.md).
+    # Módulo instalado que sai != 0 (ex: preflight recusando por falta de rede) é um caso real,
+    # não só teórico — precisa voltar pro menu, não matar a sessão inteira do pvx.
+    "$PVX_BIN_DIR/pvx" "$chosen_cmd" || true
 
     if [[ -n ${instant_return[$chosen_cmd]:-} ]]; then
       printf '\n'
