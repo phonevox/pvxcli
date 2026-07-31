@@ -303,7 +303,12 @@ os::issabel_version() {
     return 0
   fi
   if command -v rpm >/dev/null 2>&1; then
-    rpm -q --qf '%{VERSION}\n' issabel-pbx 2>/dev/null || true
+    # `rpm -q` manda "package X is not installed" pro STDOUT (não STDERR) quando não encontra
+    # o pacote — sem checar o próprio rc do rpm, essa mensagem seria capturada como se fosse
+    # uma versão de verdade (achado rodando de verdade num container sem Issabel instalado).
+    local v
+    v=$(rpm -q --qf '%{VERSION}\n' issabel-pbx 2>/dev/null) || return 1
+    [[ $v =~ ^[0-9] ]] && printf '%s\n' "$v"
     return 0
   fi
   return 1

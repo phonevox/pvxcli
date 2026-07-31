@@ -88,4 +88,16 @@ os::pkg_manager >/dev/null 2>&1 || true
 test_13_pkg_manager_nao_quebra() { assert_pass 'pkg_manager não quebra, mesmo sem gerenciador conhecido (ex: macOS/brew)'; }
 assert_flush
 
+# regressão: `rpm -q` manda "package X is not installed" pro STDOUT (não STDERR) quando o
+# pacote não existe — sem checar o rc do rpm, isso vazava como se fosse uma versão de verdade
+# (achado rodando de verdade num container Rocky 8 limpo, sem Issabel instalado).
+test_14_issabel_version_nao_confunde_erro_do_rpm() {
+  if command -v rpm >/dev/null 2>&1 && ! rpm -q issabel-pbx >/dev/null 2>&1; then
+    assert_eq 'issabel_version não devolve a mensagem de erro do rpm como versão' '' "$(os::issabel_version)"
+  else
+    assert_pass 'sem rpm disponível ou issabel-pbx já instalado — nada a testar aqui'
+  fi
+}
+assert_flush
+
 assert_summary
