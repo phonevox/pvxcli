@@ -38,7 +38,19 @@ test_02_fetch_conexao_recusada_reporta_motivo() {
     bash -c "[[ \"\$1\" == *recusada* ]]" -- "$out"
 }
 
-test_03_fetch_offline_nao_tenta_rede() {
+test_03_fetch_timeout_nao_afirma_categoricamente_firewall() {
+  local out rc=0
+  # IP não-roteável dentro de 10.0.0.0/8 sem nada respondendo — pacotes somem sem RST/ICMP
+  # unreachable, gerando timeout de conexão de verdade (rc=28), não recusa instantânea.
+  # max_time=3 aqui é só pro teste não ficar lento (net::fetch usa --connect-timeout 10 fixo,
+  # mas --max-time governa o total e corta antes se for menor).
+  out=$(net::fetch 'http://10.255.255.1/x' "$dest" teste 3 2>&1) || rc=$?
+  assert_ne 'net::fetch com timeout de conexão retorna rc != 0' 0 "$rc"
+  assert_true 'mensagem de rc=28 não afirma categoricamente "bloqueado" — cita rede lenta/instável também' \
+    bash -c "[[ \"\$1\" == *'rede lenta'* || \"\$1\" == *timeout* ]]" -- "$out"
+}
+
+test_04_fetch_offline_nao_tenta_rede() {
   local rc=0
   PVX_OFFLINE=1
   net::fetch 'https://example.com/x' "$dest" teste 5 >/dev/null 2>&1 || rc=$?

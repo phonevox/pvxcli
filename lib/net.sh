@@ -28,18 +28,25 @@ net::fetch() {
   fi
   mkdir -p "$(dirname "$dest")" 2>/dev/null || true
   local rc=0
-  curl -fsSL --connect-timeout 5 --max-time "$max_time" -o "$dest.part" "$url" 2>/dev/null || rc=$?
+  # --connect-timeout 10 (não 5) e --retry 2: achado de verdade numa VPS de rede lenta/instável
+  # onde um curl com timeout curto dava rc=28 (parecia bloqueio de firewall) mas o MESMO host,
+  # sem timeout customizado (curl puro, ou git clone), funcionava — a conexão só demorava mais
+  # pra fechar, não estava bloqueada. --retry cobre também uma falha isolada/transitória.
+  curl -fsSL --connect-timeout 10 --max-time "$max_time" \
+    --retry 2 --retry-delay 2 --retry-connrefused \
+    -o "$dest.part" "$url" 2>/dev/null || rc=$?
   if ((rc != 0)); then
     rm -f "$dest.part"
-    # traduz o rc do curl em vez de um "falha ao baixar" mudo — achado de verdade numa VPS
-    # onde SSH/ICMP funcionavam mas a porta 443 estava bloqueada (curl rc=28, timeout de
-    # conexão), o que fazia self-update/registry/módulos falharem todos com a mesma mensagem
-    # genérica, sem dar pra saber se era DNS, firewall, ou algo no servidor remoto.
+    # traduz o rc do curl em vez de um "falha ao baixar" mudo — não afirma categoricamente
+    # "bloqueado por firewall" pro rc=28: pode ser isso, mas também pode ser só uma rede com
+    # latência alta pro timeout configurado (mesmo achado acima) — reporta as duas hipóteses.
     local motivo='motivo desconhecido'
     case $rc in
       6) motivo='DNS não resolveu o host' ;;
       7) motivo='conexão recusada — nada escutando ou bloqueado antes de chegar no host' ;;
-      28) motivo='timeout de conexão — porta provavelmente bloqueada por firewall (ping/ICMP pode funcionar mesmo assim, é outra porta)' ;;
+      28)
+        motivo="timeout de conexão mesmo após retry — pode ser porta bloqueada por firewall OU rede lenta/instável; tente 'curl -v $url' manualmente pra comparar"
+        ;;
       22 | 35 | 60) motivo='servidor respondeu, mas com erro HTTP/TLS' ;;
     esac
     log::error 'falha ao baixar %s: %s (curl rc=%d: %s)' "$label" "$url" "$rc" "$motivo"
