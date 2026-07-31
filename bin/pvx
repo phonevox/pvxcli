@@ -131,11 +131,14 @@ core::_suggest() {
 # propósito: assim volta pro menu depois, em vez de encerrar o pvx junto com o comando).
 # Sem TTY (script/cron/CI), cai no help de texto de sempre — nunca fica esperando teclado.
 core::_interactive_menu() {
-  pvx::require tui core/self_update
+  pvx::require tui core/self_update cmd_modules
 
   # best-effort, cacheado (PVX_SELF_UPDATE_TTL) — só bate na rede se o cache expirou, e nunca
   # atrapalha a abertura do menu se a rede falhar (ver core::_self_update_notify).
   core::_self_update_notify || true
+  # mesmo padrão, mas pros MÓDULOS instalados (registry ou git direto) — ver
+  # modules::_updates_notify em lib/cmd_modules.sh.
+  modules::_updates_notify || true
 
   # rede de segurança: cada tui::select/checklist/pause já restaura a própria stty sozinho no
   # caminho normal (inclusive em Ctrl-C, ver o comentário em tui::_select_tty) — isso aqui é só

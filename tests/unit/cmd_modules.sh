@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # tests/unit/cmd_modules.sh — testa a heurística de reconhecimento/expansão de alvo git em
-# `pvx modules install` (lib/cmd_modules.sh): URL completa, atalho "org/repo" do GitHub, e o
-# prefixo de convenção "pvx-mod-" inserido automaticamente. Tudo aqui é lógica de string pura,
-# sem rede — não confunde com um clone de verdade (isso é smoke/manual, não unit).
+# `pvx modules install` (lib/cmd_modules.sh): URL completa, atalho "org/repo" do GitHub, o
+# prefixo de convenção "pvx-mod-" inserido automaticamente, e o cache do aviso de atualização
+# disponível. Tudo aqui é lógica pura (string/arquivo local) — nada de rede real (isso é
+# smoke/manual, não unit): modules::_git_remote_head_sha/_updates_scan não são testados aqui.
 set -Eeuo pipefail
 
 _TEST_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -17,6 +18,8 @@ pvx::require color log cmd_modules
 color::init
 export PVX_LOG_DIR="$(pvx::tmpdir)/logtest"
 log::init
+export PVX_CACHE_DIR="$(pvx::tmpdir)/fixture_cmd_modules/cache"
+mkdir -p "$PVX_CACHE_DIR"
 # shellcheck source=/dev/null
 source "$_TEST_DIR/../lib/assert.sh"
 
@@ -80,6 +83,18 @@ test_13_resolve_nome_simples_nao_e_git() {
   local rc=0
   modules::_resolve_git_target 'dummy' >/dev/null 2>&1 || rc=$?
   assert_ne 'nome de módulo simples (sem "/") não vira alvo git — segue pro registry' 0 "$rc"
+}
+assert_flush
+
+# --- cache do aviso de atualização disponível (modules::_updates_notify) -------------------
+test_14_updates_cache_vazio_sem_arquivo() {
+  modules::_updates_cache_read
+  assert_eq 'updates_cache_read: pending vazio sem cache ainda' '' "$_MU_CACHE_PENDING"
+}
+test_15_updates_cache_write_depois_read() {
+  modules::_updates_cache_write 'netinstall,outromodulo'
+  modules::_updates_cache_read
+  assert_eq 'updates_cache_write/read: pending bate' 'netinstall,outromodulo' "$_MU_CACHE_PENDING"
 }
 assert_flush
 

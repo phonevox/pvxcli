@@ -324,9 +324,15 @@ modules::cmd_list() {
       fi
     done <<<"$names_from_registry"
   fi
+  # status dos módulos git-diretos (sem registry) vem do CACHE do aviso de atualização
+  # (modules::_updates_notify) — nunca uma checagem ao vivo aqui, pra `list` continuar rápido
+  # mesmo com módulos instalados via git.
+  modules::_updates_cache_read
   for n in "${!installed_version[@]}"; do
     [[ -n ${seen[$n]:-} ]] && continue
-    printf '%-16s %-10s %-10s %-14s %s\n' "$n" "${installed_version[$n]}" '-' local "${installed_command[$n]}"
+    local git_status=local
+    [[ ,${_MU_CACHE_PENDING:-}, == *,"$n",* ]] && git_status=outdated
+    printf '%-16s %-10s %-10s %-14s %s\n' "$n" "${installed_version[$n]}" '-' "$git_status" "${installed_command[$n]}"
   done
   return 0
 }
@@ -762,7 +768,11 @@ modules::cmd_update() {
   pvx::require registry json exec os net integrity
   local target=${1:-}
 
-  registry::refresh || return 4
+  # best-effort, não fatal: um módulo instalado direto via git (sem passar pelo registry)
+  # continua atualizável mesmo sem nenhum índice remoto configurado/alcançável — achado
+  # testando de verdade: isso abortava QUALQUER update, até de módulo git, só por o registry
+  # padrão (fixture local) não existir.
+  registry::refresh 2>/dev/null || log::warn 'registry indisponível — só módulos instalados via git podem ser checados'
 
   local -a to_update=()
   if [[ -z $target || $target == --all ]]; then
@@ -800,7 +810,17 @@ modules::_update_one() {
 
   local idx
   if ! idx=$(registry::lookup "$name"); then
-    log::warn 'módulo %s instalado localmente, mas ausente do registry — pulando update' "$name"
+    # sem registry não é necessariamente "sem como atualizar": um módulo instalado direto via
+    # git (pvx modules install <url>/<org>/<repo>) grava a própria origem no state — dá pra
+    # re-checar o remoto sem precisar de índice nenhum.
+    local origin
+    origin=$(registry::state_get "$name" origin 2>/dev/null) || origin=''
+    if [[ $origin == git ]]; then
+      modules::_update_one_git "$name"
+      return $?
+    fi
+    log::warn 'módulo %s instalado localmente (origem: %s), sem registry nem git pra checar atualização — reinstale manualmente se precisar' \
+      "$name" "${origin:-desconhecida}"
     return 0
   fi
 
@@ -833,6 +853,51 @@ modules::_update_one() {
   dl_file=$(net::fetch_to_cache "$url" "$PVX_CACHE_DIR/downloads" "atualização de $name") || return 4
 
   modules::_apply_update "$name" "$command" "$cur_ver" "$new_ver" "$dl_file" "$sha"
+}
+
+# modules::_git_remote_head_sha <url> — sha do HEAD remoto via `git ls-remote` (rápido, sem
+# clonar o repo inteiro) — usado tanto por update quanto pelo aviso de atualização disponível.
+modules::_git_remote_head_sha() {
+  local url=$1 out
+  out=$(git ls-remote "$url" HEAD 2>/dev/null) || return 1
+  [[ -n $out ]] || return 1
+  printf '%s' "${out%%$'\t'*}"
+}
+
+# modules::_update_one_git <nome> — update pra módulo instalado direto via git (sem registry):
+# re-clona a URL gravada em state (origin=git, source_ref="url#sha") e compara o commit
+# resolvido contra o que já está instalado. Sempre segue a branch padrão do repo — a ref
+# exata usada no install original (se houve `--ref`) não fica gravada separadamente; pra
+# fixar numa ref específica de novo, reinstale com `pvx modules install <url> --ref X --force`.
+modules::_update_one_git() {
+  local name=$1 source_ref url cur_sha command old_ver
+  source_ref=$(registry::state_get "$name" source_ref 2>/dev/null) || source_ref=''
+  if [[ -z $source_ref ]]; then
+    log::warn 'módulo %s: sem origem git gravada, não dá pra checar atualização' "$name"
+    return 0
+  fi
+  url=${source_ref%%#*}
+  cur_sha=$(registry::state_get "$name" tarball_sha256 2>/dev/null) || cur_sha=''
+  command=$(registry::state_get "$name" command)
+  old_ver=$(registry::state_get "$name" version)
+
+  modules::_git_clone_staging "$url" '' || return $?
+
+  if [[ -n $cur_sha && -n $_MODULES_GIT_SHA && $cur_sha == "$_MODULES_GIT_SHA" ]]; then
+    log::info 'módulo %s já está no commit mais recente (%s)' "$name" "${cur_sha:0:12}"
+    rm -rf "$_MODULES_STAGING"
+    return 0
+  fi
+
+  local flat new_ver new_source_ref
+  flat=$(pvx::tmpdir)/update-git.$$.flat
+  json::flatten_file "$_MODULES_STAGING/module.json" >"$flat"
+  new_ver=$(json::get "$flat" .version)
+  new_source_ref=$url
+  [[ -n $_MODULES_GIT_SHA ]] && new_source_ref="$url#$_MODULES_GIT_SHA"
+
+  modules::_apply_update_from_staging "$name" "$command" "$old_ver" "$new_ver" "$_MODULES_STAGING" \
+    git "$new_source_ref" "$_MODULES_GIT_VERIFIED" "$_MODULES_GIT_SHA"
 }
 
 # modules::_apply_update <nome> <comando> <versão-atual> <versão-nova> <tarball> <sha256-esperado>
@@ -1026,4 +1091,88 @@ modules::cmd_help() {
   fi
   log::error 'módulo desconhecido: %s' "$name"
   return 3
+}
+
+# --- aviso de "atualização disponível" pros módulos instalados ------------------------------
+# Mesmo padrão de core::_self_update_notify (lib/core/self_update.sh): cache com TTL, best-
+# effort, só bate rede quando o cache expirou, chamado apenas ao abrir o menu interativo —
+# nunca em toda invocação de comando.
+PVX_MODULE_UPDATE_TTL=${PVX_MODULE_UPDATE_TTL:-86400}
+
+modules::_updates_cache_file() { printf '%s/modules-update.cache\n' "$PVX_CACHE_DIR"; }
+
+modules::_updates_cache_read() {
+  _MU_CACHE_CHECKED_AT=0
+  _MU_CACHE_PENDING=''
+  local f
+  f=$(modules::_updates_cache_file)
+  [[ -r $f ]] || return 0
+  { read -r _MU_CACHE_CHECKED_AT; read -r _MU_CACHE_PENDING; } <"$f" 2>/dev/null
+  [[ $_MU_CACHE_CHECKED_AT =~ ^[0-9]+$ ]] || _MU_CACHE_CHECKED_AT=0
+  return 0
+}
+
+modules::_updates_cache_write() {
+  local pending=$1 f now
+  f=$(modules::_updates_cache_file)
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  printf -v now '%(%s)T' -1
+  printf '%s\n%s\n' "$now" "$pending" >"$f.tmp" && mv -f "$f.tmp" "$f"
+  return 0
+}
+
+# modules::_updates_scan — fetch AO VIVO (ignora TTL), best-effort: qualquer módulo que não dê
+# pra checar (sem rede, origem desconhecida, ausente do registry) é só pulado, nunca aborta o
+# scan inteiro. Imprime (stdout) os nomes com atualização pendente, separados por vírgula.
+modules::_updates_scan() {
+  pvx::require registry json
+  local rows name version origin source_ref sha _rest
+  local -a pending=()
+  rows=$(registry::state_list)
+  while IFS='|' read -r name version _cmd _installed_at origin source_ref sha _rest; do
+    [[ -z $name ]] && continue
+    case $origin in
+      registry)
+        local idx new_ver flat
+        idx=$(registry::lookup "$name" 2>/dev/null) || continue
+        flat=$(registry::index_flat_path)
+        new_ver=$(json::get "$flat" ".modules[$idx].version" 2>/dev/null) || continue
+        [[ $(version::cmp "$new_ver" "$version") == 1 ]] && pending+=("$name")
+        ;;
+      git)
+        local url remote_sha
+        url=${source_ref%%#*}
+        remote_sha=$(modules::_git_remote_head_sha "$url" 2>/dev/null) || continue
+        [[ -n $remote_sha && -n $sha && $remote_sha != "$sha" ]] && pending+=("$name")
+        ;;
+    esac
+  done <<<"$rows"
+  local IFS=,
+  printf '%s' "${pending[*]:-}"
+}
+
+# modules::_updates_notify — chamado só ao entrar no menu interativo (ver bin/pvx). Nunca
+# aplica nada, só avisa; falha de rede é sempre silenciosa (não atrapalha quem só queria abrir
+# o menu).
+modules::_updates_notify() {
+  [[ ${PVX_OFFLINE:-0} == 1 ]] && return 0
+  pvx::require registry
+
+  modules::_updates_cache_read
+  local now age
+  printf -v now '%(%s)T' -1
+  age=$((now - _MU_CACHE_CHECKED_AT))
+
+  if ((age >= PVX_MODULE_UPDATE_TTL)); then
+    registry::refresh >/dev/null 2>&1 || true
+    local pending
+    pending=$(modules::_updates_scan 2>/dev/null) || pending=''
+    modules::_updates_cache_write "$pending"
+    modules::_updates_cache_read
+  fi
+
+  [[ -n $_MU_CACHE_PENDING ]] || return 0
+  log::warn 'atualização disponível pra módulo(s): %s' "$_MU_CACHE_PENDING"
+  log::hint "rode 'pvx modules update' pra atualizar"
+  return 0
 }
