@@ -40,7 +40,11 @@ modules::_git_shorthand_expand() {
   org=${shorthand%%/*}
   repo=${shorthand#*/}
   [[ $repo == pvx-mod-* ]] || repo="pvx-mod-$repo"
-  base=${PVX_MODULE_GIT_SHORTHAND_BASE:-'git@github.com:%s.git'}
+  # HTTPS por padrão, não SSH: numa central recém-provisionada é comum ter (ou ser fácil de
+  # conseguir) um token/credential-helper de HTTPS, mas quase nunca uma deploy key SSH já
+  # cadastrada no repo — achado de verdade numa VPS onde `git@github.com:...` batia
+  # "Permission denied (publickey)" mas o `https://` equivalente clonava de primeira.
+  base=${PVX_MODULE_GIT_SHORTHAND_BASE:-'https://github.com/%s.git'}
   # shellcheck disable=SC2059 # $base É o template de propósito (configurável via pvx.conf)
   printf -- "$base" "$org/$repo"
 }
