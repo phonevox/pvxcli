@@ -387,6 +387,7 @@ pvx::_load_config() {
       auto_sudo) [[ $v == true || $v == 1 ]] && PVX_AUTO_SUDO=1 ;;
       tui) PVX_TUI=$v ;;
       registry_url) PVX_REGISTRY_URL=$v ;;
+      module_git_shorthand_base) PVX_MODULE_GIT_SHORTHAND_BASE=$v ;;
       self_update_url) PVX_SELF_UPDATE_URL=$v ;;
       self_update_check_ttl) PVX_SELF_UPDATE_TTL=$v ;;
     esac

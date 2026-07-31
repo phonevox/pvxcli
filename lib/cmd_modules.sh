@@ -20,12 +20,48 @@ subcomandos:
 EOF
 }
 
-# modules::_is_git_url <string> — heurística: termina em .git (cobre https://.../repo.git e
-# o atalho scp-like git@host:org/repo.git), ou usa esquema git://.
+# modules::_is_git_url <string> — heurística: URL completa (http(s)://, git://, ou o atalho
+# scp-like git@host:org/repo[.git], com ou sem o sufixo .git — GitHub clona os dois de boa).
+# Não cobre o atalho curto "org/repo" — isso é modules::_resolve_git_target, que decide se
+# expande antes de chegar aqui.
 modules::_is_git_url() {
   case $1 in
-    *.git | git://*) return 0 ;;
+    *.git | git://* | http://* | https://* | git@*:*) return 0 ;;
   esac
+  return 1
+}
+
+# modules::_git_shorthand_expand <org>/<repo> — convenção do time: repositório de módulo é
+# sempre "pvx-mod-<nome>" (ver docs/module-authoring.md) — aceita a forma completa
+# ("org/pvx-mod-nome") ou a curta ("org/nome"), sem o operador ter que lembrar o prefixo toda
+# vez que digitar um install via git.
+modules::_git_shorthand_expand() {
+  local shorthand=$1 org repo base
+  org=${shorthand%%/*}
+  repo=${shorthand#*/}
+  [[ $repo == pvx-mod-* ]] || repo="pvx-mod-$repo"
+  base=${PVX_MODULE_GIT_SHORTHAND_BASE:-'git@github.com:%s.git'}
+  # shellcheck disable=SC2059 # $base É o template de propósito (configurável via pvx.conf)
+  printf -- "$base" "$org/$repo"
+}
+
+# modules::_resolve_git_target <string> — devolve (stdout) uma URL de git pronta pra clonar se
+# <string> for reconhecível como alvo git: URL completa OU atalho "org/repo"/"org/nome"
+# (expandido via modules::_git_shorthand_expand). rc=1 se não for nenhum dos dois — quem chama
+# trata como nome de módulo do registry, igual antes (nomes de módulo nunca têm "/", então não
+# há ambiguidade possível entre os dois casos).
+modules::_resolve_git_target() {
+  local s=$1 resolved
+  if modules::_is_git_url "$s"; then
+    printf '%s\n' "$s"
+    return 0
+  fi
+  if [[ $s =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    resolved=$(modules::_git_shorthand_expand "$s")
+    log::info 'install: %s expandido para %s' "$s" "$resolved"
+    printf '%s\n' "$resolved"
+    return 0
+  fi
   return 1
 }
 
@@ -343,11 +379,14 @@ modules::cmd_install() {
     return $?
   fi
 
-  # instalação direta via URL git, sem passar pelo registry — só faz sentido com um único
-  # alvo (misturar isso com uma lista de nomes de registry seria ambíguo).
-  if ((${#names[@]} == 1)) && modules::_is_git_url "${names[0]}"; then
-    modules::_install_from_git "${names[0]}" "$ref" "$force"
-    return $?
+  # instalação direta via URL (ou atalho "org/repo") git, sem passar pelo registry — só faz
+  # sentido com um único alvo (misturar isso com uma lista de nomes de registry seria ambíguo).
+  if ((${#names[@]} == 1)); then
+    local git_target=''
+    if git_target=$(modules::_resolve_git_target "${names[0]}"); then
+      modules::_install_from_git "$git_target" "$ref" "$force"
+      return $?
+    fi
   fi
   if [[ -n $ref ]]; then
     log::error 'install: --ref só faz sentido junto de uma URL git'
@@ -495,10 +534,20 @@ modules::_git_clone_staging() {
 
   local -a clone_args=(--depth 1 --quiet)
   [[ -n $ref ]] && clone_args+=(--branch "$ref")
-  if ! git clone "${clone_args[@]}" "$url" "$staging" >/dev/null 2>&1; then
+  local clone_err
+  clone_err="$staging_root/clone-err.$$"
+  if ! git clone "${clone_args[@]}" "$url" "$staging" >/dev/null 2>"$clone_err"; then
     log::error 'falha ao clonar %s%s' "$url" "${ref:+ (ref: $ref)}"
+    # motivo real (ex: "Permission denied (publickey)", host desconhecido, ref inexistente)
+    # ficava só no /dev/null antes disso — "falha ao clonar" sozinho não dava pra diagnosticar
+    # se era URL errada, falta de credencial, ou ref inválida.
+    if [[ -s $clone_err ]]; then
+      log::error 'git: %s' "$(tail -n 5 "$clone_err")"
+    fi
+    rm -f "$clone_err"
     return 4
   fi
+  rm -f "$clone_err"
 
   _MODULES_GIT_SHA=$(git -C "$staging" rev-parse HEAD 2>/dev/null) || _MODULES_GIT_SHA=''
   rm -rf "$staging/.git"
