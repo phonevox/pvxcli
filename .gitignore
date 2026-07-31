@@ -2,3 +2,9 @@ learning-materials/
 dist/
 .smoke-sandbox.*
 docs/
+
+# repos de módulo clonados localmente pra dev/teste (cada um com seu próprio .git) — ver
+# docs/module-authoring.md. dummy/ é a única exceção: fixture de teste do próprio pvx-core,
+# versionada junto (install.sh embarca ela pros smoke tests).
+/modules/*
+!/modules/dummy/
