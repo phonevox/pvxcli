@@ -76,5 +76,26 @@ if [[ -r $comp_src ]]; then
   fi
 fi
 
+# --- garante que o diretório de $BIN_LINK está no PATH -------------------------------------
+# achado rodando de verdade numa VPS Rocky recém-provisionada via kickstart: o PATH de root
+# vinha sem /usr/local/bin (só /sbin:/bin:/usr/sbin:/usr/bin) — o symlink ficava certinho, mas
+# "pvx" dava "command not found" pra qualquer sessão nova, só funcionando via caminho completo.
+bin_dir=$(dirname "$BIN_LINK")
+if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
+  profile_dir=$(_pvx_sys_dir /etc/profile.d)
+  if [[ -d $profile_dir ]]; then
+    printf 'export PATH="%s:$PATH"\n' "$bin_dir" >"$profile_dir/pvx-path.sh"
+    chmod 0644 "$profile_dir/pvx-path.sh"
+    printf 'aviso: %s não estava no PATH — %s/pvx-path.sh criado (sessões novas já funcionam).\n' \
+      "$bin_dir" "$profile_dir" >&2
+    printf 'nesta sessão, rode:\n' >&2
+    printf '  export PATH="%s:$PATH"\n' "$bin_dir" >&2
+  else
+    printf 'aviso: %s não está no PATH e %s não existe pra corrigir sozinho — adicione manualmente:\n' \
+      "$bin_dir" "$profile_dir" >&2
+    printf '  export PATH="%s:$PATH"\n' "$bin_dir" >&2
+  fi
+fi
+
 printf 'pvx-core %s instalado (%s -> %s).\n' "$version" "$BIN_LINK" "$release_dir"
 printf "rode 'pvx help' pra começar.\n"
