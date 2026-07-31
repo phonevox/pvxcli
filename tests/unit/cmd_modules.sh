@@ -20,6 +20,10 @@ export PVX_LOG_DIR="$(pvx::tmpdir)/logtest"
 log::init
 export PVX_CACHE_DIR="$(pvx::tmpdir)/fixture_cmd_modules/cache"
 mkdir -p "$PVX_CACHE_DIR"
+# isola de /var/lib/pvx de verdade — modules::cmd_update lê registry::state_list, e sem isso
+# este teste bateria no installed.db real de qualquer máquina que rodar a suíte.
+export PVX_STATE_DIR="$(pvx::tmpdir)/fixture_cmd_modules/var/lib/pvx"
+mkdir -p "$PVX_STATE_DIR"
 # shellcheck source=/dev/null
 source "$_TEST_DIR/../lib/assert.sh"
 
@@ -95,6 +99,18 @@ test_15_updates_cache_write_depois_read() {
   modules::_updates_cache_write 'netinstall,outromodulo'
   modules::_updates_cache_read
   assert_eq 'updates_cache_write/read: pending bate' 'netinstall,outromodulo' "$_MU_CACHE_PENDING"
+}
+assert_flush
+
+# regressão: depois de um `pvx modules update`, o cache de "atualização disponível" ficava
+# preso em "outdated" por até 1 dia mesmo já atualizado — achado de verdade (usuário reportou
+# list/update contradizendo um ao outro). cmd_update precisa invalidar o cache sempre, mesmo
+# quando o alvo não existe (não precisa de um módulo de verdade instalado pra testar isso).
+test_16_cmd_update_invalida_cache_sempre() {
+  modules::_updates_cache_write 'algum-modulo-qualquer'
+  modules::cmd_update 'modulo-que-nao-existe-de-jeito-nenhum' >/dev/null 2>&1 || true
+  assert_false 'cmd_update apaga o arquivo de cache (mesmo alvo não existindo)' \
+    bash -c '[[ -e "$1" ]]' -- "$(modules::_updates_cache_file)"
 }
 assert_flush
 

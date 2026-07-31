@@ -797,6 +797,13 @@ modules::cmd_update() {
       any_failed=1
     }
   done
+
+  # invalida o cache do aviso de "atualização disponível": sem isso, `pvx modules list`/o
+  # menu interativo continuavam marcando um módulo como "outdated" por até 1 dia (TTL do
+  # cache) mesmo logo depois de um `update` bem-sucedido — achado de verdade, o próprio
+  # usuário reportou "list mostra outdated mas update diz que já tá atualizado".
+  rm -f "$(modules::_updates_cache_file)" 2>/dev/null || true
+
   ((any_failed)) && return "$rc"
   return 0
 }
