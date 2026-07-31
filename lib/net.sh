@@ -27,9 +27,22 @@ net::fetch() {
     return 4
   fi
   mkdir -p "$(dirname "$dest")" 2>/dev/null || true
-  if ! curl -fsSL --connect-timeout 5 --max-time "$max_time" -o "$dest.part" "$url" 2>/dev/null; then
+  local rc=0
+  curl -fsSL --connect-timeout 5 --max-time "$max_time" -o "$dest.part" "$url" 2>/dev/null || rc=$?
+  if ((rc != 0)); then
     rm -f "$dest.part"
-    log::error 'falha ao baixar %s: %s' "$label" "$url"
+    # traduz o rc do curl em vez de um "falha ao baixar" mudo — achado de verdade numa VPS
+    # onde SSH/ICMP funcionavam mas a porta 443 estava bloqueada (curl rc=28, timeout de
+    # conexão), o que fazia self-update/registry/módulos falharem todos com a mesma mensagem
+    # genérica, sem dar pra saber se era DNS, firewall, ou algo no servidor remoto.
+    local motivo='motivo desconhecido'
+    case $rc in
+      6) motivo='DNS não resolveu o host' ;;
+      7) motivo='conexão recusada — nada escutando ou bloqueado antes de chegar no host' ;;
+      28) motivo='timeout de conexão — porta provavelmente bloqueada por firewall (ping/ICMP pode funcionar mesmo assim, é outra porta)' ;;
+      22 | 35 | 60) motivo='servidor respondeu, mas com erro HTTP/TLS' ;;
+    esac
+    log::error 'falha ao baixar %s: %s (curl rc=%d: %s)' "$label" "$url" "$rc" "$motivo"
     return 4
   fi
   mv -f "$dest.part" "$dest"
