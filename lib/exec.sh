@@ -24,6 +24,71 @@ PVX_ASSUME_YES=${PVX_ASSUME_YES:-0}
 _PVX_SECRET_FILES=()
 _PVX_SECRET_FILES_HOOK_REGISTERED=0
 
+# --- spinner in-line (estilo npm), API pública reutilizável por qualquer módulo -------------
+# Achado de verdade: run/srun/qrun capturam TODA a saída em arquivo e só a "reproduzem" depois
+# que o comando termina (ver comentário em exec::_run_impl mais abaixo — não é streaming). Pro
+# operador, isso significa tela completamente parada durante um comando demorado (dnf baixando
+# de um mirror lento, um scriptlet %post de RPM fazendo algo pesado, etc.), indistinguível de
+# "travou". run/srun/qrun já chamam isto sozinhos (ver mais abaixo) — mas qualquer módulo pode
+# usar direto ao redor de trabalho que NÃO passa por run/srun/qrun (um loop esperando um
+# serviço subir, uma chamada de API, etc.):
+#
+#   exec::spinner_start 'esperando o Asterisk subir...'
+#   until os::service_active asterisk; do sleep 1; done
+#   exec::spinner_stop
+#
+# Só anima quando stderr é um terminal de verdade (nunca polui log em arquivo/pipe/CI) — exige
+# nenhum cuidado extra do chamador além de sempre parear start com stop.
+PVX_NO_SPINNER=${PVX_NO_SPINNER:-0}
+_PVX_SPINNER_PID=''
+_PVX_SPINNER_HOOK_REGISTERED=0
+
+exec::spinner_active() {
+  (( PVX_NO_SPINNER )) && return 1
+  [[ -t 2 ]] || return 1
+  return 0
+}
+
+exec::spinner_start() {
+  # start chamado duas vezes sem stop no meio (ex: chamador esqueceu, ou run() aninhado):
+  # encerra o spinner anterior antes de abrir outro, nunca deixa dois escrevendo \r ao mesmo
+  # tempo na mesma linha.
+  [[ -n $_PVX_SPINNER_PID ]] && exec::spinner_stop
+  exec::spinner_active || return 0
+  local label=$1
+  (( ${#label} > 60 )) && label="${label:0:57}..."
+  if (( ! _PVX_SPINNER_HOOK_REGISTERED )); then
+    _PVX_SPINNER_HOOK_REGISTERED=1
+    # registra o cleanup no exit hook ANTES do primeiro spin: se um Ctrl-C interromper o
+    # processo com o spinner ainda ativo, a chamada explícita de spinner_stop lá embaixo nunca
+    # roda (o SIGINT corta o fluxo ali mesmo) — o hook de saída é quem garante o cursor de
+    # volta e o subprocesso do spinner morto, mesmo nesse caminho.
+    pvx::on_exit exec::spinner_stop
+  fi
+  tput civis 2>/dev/null >&2 || true
+  (
+    local -a frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+    local i=0 start=$SECONDS elapsed
+    while true; do
+      elapsed=$((SECONDS - start))
+      printf '\r%s %s (%ds)\033[K' "${frames[i]}" "$label" "$elapsed" >&2
+      i=$(( (i + 1) % ${#frames[@]} ))
+      sleep 0.08
+    done
+  ) &
+  _PVX_SPINNER_PID=$!
+}
+
+exec::spinner_stop() {
+  [[ -n $_PVX_SPINNER_PID ]] || return 0
+  kill "$_PVX_SPINNER_PID" 2>/dev/null || true
+  wait "$_PVX_SPINNER_PID" 2>/dev/null || true
+  _PVX_SPINNER_PID=''
+  exec::spinner_active && printf '\r\033[K' >&2
+  tput cnorm 2>/dev/null >&2 || true
+  return 0
+}
+
 # --- renderização do comando para log, com máscara de índices e redação de segredos ----------
 exec::_render() {
   local mask_csv=$1
@@ -113,13 +178,29 @@ exec::_run_impl() {
     attempt=$((attempt + 1))
     : >"$out_file"
     : >"$err_file"
+    # Roda em BACKGROUND (+ wait), não em primeiro plano direto, por dois motivos: (1) dá pro
+    # spinner animar enquanto o comando real roda, sem competir pelo mesmo terminal — o
+    # spinner escreve \r direto em stderr, o comando real vai pros arquivos de captura; (2)
+    # ACHADO DE VERDADE, o motivo mais importante: bin/pvx roda inteiro sob `set -e`. Um
+    # comando de primeiro plano solto (`cmd; rc=$?`, sem `&&`/`||` na mesma linha) que retorna
+    # != 0 dispara o errexit IMEDIATAMENTE ali, matando o processo `pvx` INTEIRO antes mesmo de
+    # chegar no `rc=$?` — nenhum log::error, nenhum "-> rc=", nenhuma linha de stderr, nada:
+    # exatamente o "kickout" silencioso mesmo com --debug que motivou essa revisão. E como
+    # praticamente toda chamada de `run --`/`srun --` no repo inteiro (núcleo + módulos) é
+    # solta, sem `|| true` no fim, QUALQUER comando que falhasse matava o pvx inteiro sem
+    # aviso — não só o dnf gigante do netinstall. `cmd & wait "$pid" && rc=0 || rc=$?` blinda
+    # isso: por estar dentro de uma lista `&&`/`||`, o bash NUNCA conta essa falha pro errexit,
+    # não importa o que aconteça dentro do comando (documentado no bash: falha de um comando
+    # cujo resultado está sendo testado por &&/||/if/while nunca dispara o -e).
+    exec::spinner_start "$desc"
     if [[ -n $cwd ]]; then
-      (cd "$cwd" && exec::_with_timeout "$timeout" "$@" >"$out_file" 2>"$err_file")
-      rc=$?
+      (cd "$cwd" && exec::_with_timeout "$timeout" "$@" >"$out_file" 2>"$err_file") &
     else
-      exec::_with_timeout "$timeout" "$@" >"$out_file" 2>"$err_file"
-      rc=$?
+      exec::_with_timeout "$timeout" "$@" >"$out_file" 2>"$err_file" &
     fi
+    local cmd_pid=$!
+    wait "$cmd_pid" && rc=0 || rc=$?
+    exec::spinner_stop
     exec::_rc_ok "$rc" "$ok_csv" && break
     (( attempt > retry )) && break
     log::warn 'comando falhou (rc=%d), tentativa %d/%d — %s' "$rc" "$attempt" "$((retry + 1))" "$desc"
@@ -264,8 +345,11 @@ exec::retry() {
   local attempt=0 rc=0
   while true; do
     attempt=$((attempt + 1))
-    "$@"
-    rc=$?
+    # `&& rc=0 || rc=$?`, não `"$@"; rc=$?`: sob `set -e` (bin/pvx roda assim), um comando
+    # solto que falha dispara o errexit ali mesmo, matando o processo inteiro ANTES de tentar
+    # de novo — destrutiria o propósito inteiro do retry na primeira tentativa ruim. Mesmo
+    # achado do loop principal em exec::_run_impl (ver comentário lá).
+    "$@" && rc=0 || rc=$?
     (( rc == 0 )) && return 0
     (( attempt > n )) && return "$rc"
     sleep "$delay" 2>/dev/null || true

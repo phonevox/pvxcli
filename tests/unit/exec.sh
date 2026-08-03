@@ -79,6 +79,67 @@ test_11_retry_parou_com_sucesso() {
 }
 assert_flush
 
+# --- regressão: run() bare (call site sem `if`/`||`) cujo comando falha ainda assim REPORTA ---
+# --- o erro (rc real + "comando falhou") antes do processo sair, em vez de sumir sem nada ------
+# Achado de verdade: bin/pvx roda com `set -Eeuo pipefail`. Antes desta correção, o comando de
+# primeiro plano dentro de exec::_run_impl era solto (`cmd; rc=$?`) — se o comando falhasse, o
+# errexit disparava ALI MESMO, matando o processo inteiro antes até de logar "comando falhou":
+# o "kickout" silencioso, mesmo com --debug, que motivou essa correção. A troca pra
+# `cmd & wait "$pid" && rc=0 || rc=$?` blinda ISSO (falha de um comando testado por &&/|| nunca
+# dispara o -e) — mas não existe mágica que impeça o `set -e` de agir quando o PRÓPRIO call
+# site de `run --` é solto (sem if/||), que é como a esmagadora maioria dos `run --`/`srun --`
+# do repo inteiro é escrita: nesse caso o processo ainda sai (é assim que set -e funciona,
+# ponto), só que agora com a mensagem de erro real já impressa antes, não mais em silêncio
+# total. Roda um `bash -c` isolado (não mata o processo deste teste) reproduzindo exatamente
+# esse cenário — call site solto de propósito, igual ao `os::pkg_install` original que motivou
+# a correção.
+regressao_rc=0
+regressao_out=$(
+  PVX_ROOT="$PVX_ROOT" PVX_LIB_DIR="$PVX_LIB_DIR" "$BASH" -c '
+    set -Eeuo pipefail
+    source "$PVX_LIB_DIR/bootstrap.sh"
+    pvx::install_traps
+    pvx::require color log os exec
+    color::init
+    log::set_level debug
+    printf "marcador-antes\n"
+    run -- bash -c "exit 9"
+    printf "marcador-depois\n"
+  ' 2>&1
+) || regressao_rc=$?
+
+test_11b_run_bare_falho_reporta_antes_de_sair() {
+  assert_contains 'run() bare que falha reporta "comando falhou" antes do processo sair (não fica mudo)' \
+    "$regressao_out" 'comando falhou'
+}
+test_11c_run_bare_falho_rc_real_propaga() {
+  assert_eq 'run() bare que falha propaga o rc real quando ninguém guarda o call site' 9 "$regressao_rc"
+}
+test_11d_run_bare_falho_nao_continua_sem_guarda() {
+  assert_not_contains 'sem if/|| no call site, o processo realmente sai (não roda o que vem depois)' \
+    "$regressao_out" 'marcador-depois'
+}
+assert_flush
+
+# --- o padrão de verdade usado no repo (`if ! run --; then ...; fi`) SOBREVIVE e reporta certo -
+# Mostra o outro lado da mesma moeda: quando o call site guarda a chamada (padrão real usado em
+# issabel4.sh/issabel5.sh pro fallback de timedatectl, issabel-admin-passwords etc.), o processo
+# continua normalmente — e agora com "comando falhou" logado, não mais silencioso.
+guarded_rc=1
+guarded_err_file="$work/guarded_err.$$"
+if ! run -- bash -c 'exit 9' 2>"$guarded_err_file"; then
+  guarded_rc=0
+fi
+guarded_err=$(cat "$guarded_err_file" 2>/dev/null)
+rm -f "$guarded_err_file"
+test_11e_run_guardado_sobrevive() {
+  assert_eq 'if ! run -- (padrão real do repo) sobrevive e entra no branch de erro' 0 "$guarded_rc"
+}
+test_11f_run_guardado_reporta_erro() {
+  assert_contains 'if ! run -- também loga "comando falhou" (não só o rc)' "$guarded_err" 'comando falhou'
+}
+assert_flush
+
 # --- require_cmd / has_cmd ---
 test_12_has_cmd_detecta() { assert_true 'has_cmd detecta bash' exec::has_cmd bash; }
 test_13_has_cmd_nao_detecta() { assert_false 'has_cmd não detecta comando inexistente' exec::has_cmd comando_xyz_inexistente; }
