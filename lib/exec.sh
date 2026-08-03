@@ -65,9 +65,16 @@ exec::spinner_start() {
     # volta e o subprocesso do spinner morto, mesmo nesse caminho.
     pvx::on_exit exec::spinner_stop
   fi
-  tput civis 2>/dev/null >&2 || true
-  printf '\n' >&2
   (
+    # Atraso antes do primeiro frame: a maioria dos comandos (sed, mkdir, install -m, groupadd,
+    # ...) termina em poucos ms — sem esse atraso, TODO comando ganhava spinner + linha em
+    # branco, e numa sequência de comandos rápidos isso empilhava espaços enormes na tela
+    # (achado de verdade, visto rodando de verdade contra a VPS). Um comando que termina antes
+    # do atraso nunca chega a imprimir nada aqui: spinner_stop mata este subprocesso durante o
+    # sleep, antes da primeira linha sair.
+    sleep 0.15
+    tput civis 2>/dev/null >&2 || true
+    printf '\n' >&2
     local -a frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
     local i=0 start=$SECONDS elapsed
     local color=${PVX_CE[cyan]:-} reset=${PVX_CE[reset]:-}

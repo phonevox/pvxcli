@@ -165,7 +165,7 @@ tui::_select_fallback() {
 # (tipicamente: sair do loop do submenu atual, um nível pra cima). Sem TTY, cai num modo texto
 # por linha (mesma convenção do resto deste arquivo).
 tui::pause() {
-  local label=${1:-'pressione enter pra continuar (q/esc volta)'}
+  local label=${1:-'pressione enter pra continuar'}
   TUI_BACK=0
 
   if [[ ! -t 0 || ! -t 1 ]]; then
@@ -250,7 +250,38 @@ tui::input() {
   return 0
 }
 
-# tui::checklist <título> <item1> [item2 ...]
+# tui::password <título> <rótulo> — prompt de senha mascarado (sem eco), com o mesmo cabeçalho
+# em negrito de tui::select/tui::checklist (passe um `tui::breadcrumb ...` como título) — pra
+# ficar visualmente consistente com o resto dos prompts do menu, em vez de cada chamador
+# desenhar o próprio estilo. Resultado em TUI_PASSWORD; nunca ecoado na tela e nunca escrito em
+# stdout (só o título/rótulo vão pra stderr) — seguro chamar de dentro de um chamador que usa
+# `$(...)` pra capturar OUTRA coisa (ex: netinstall::ask_password decide se gera senha
+# aleatória a partir do resultado). Sem TTY em stdin, devolve "" sem perguntar nada.
+tui::password() {
+  local title=$1 label=$2
+  TUI_PASSWORD=''
+  [[ -t 0 ]] || return 0
+
+  printf '%s%s%s\n' "${PVX_C[bold]:-}" "$title" "${PVX_C[reset]:-}" >&2
+  printf '  %s: ' "$label" >&2
+
+  # Ctrl-C aqui é um `read` comum (modo cozido) — ver o comentário equivalente em tui::input.
+  trap 'trap - INT TERM; printf "\n" >&2; TUI_PASSWORD=""; return 1' INT TERM
+  local v=''
+  IFS= read -rs v
+  trap - INT TERM
+  printf '\n' >&2
+
+  TUI_PASSWORD=$v
+  return 0
+}
+
+# tui::checklist <título> <item1> [item2 ...] — pra pré-marcar itens (ex: opções recomendadas
+# já ligadas, o operador só aperta enter pra aceitar), setar o array TUI_CHECKLIST_DEFAULT ANTES
+# de chamar, um 0/1 por item na MESMA ORDEM dos itens; item sem entrada correspondente (array
+# menor que a lista de itens) ou array não setado = desmarcado, comportamento de sempre. Lido
+# só nesta chamada — sempre limpo no final, pra uma chamada seguinte sem setar de novo não
+# herdar defaults de uma chamada anterior por engano.
 tui::checklist() {
   local title=$1
   shift
@@ -260,11 +291,14 @@ tui::checklist() {
   TUI_RESULT=()
   ((n == 0)) && return 0
 
+  local _tui_rc=0
   if [[ -t 0 && -t 1 ]]; then
-    tui::_checklist_tty "$title" "${items[@]}"
+    tui::_checklist_tty "$title" "${items[@]}" || _tui_rc=$?
   else
-    tui::_checklist_fallback "$title" "${items[@]}"
+    tui::_checklist_fallback "$title" "${items[@]}" || _tui_rc=$?
   fi
+  TUI_CHECKLIST_DEFAULT=()
+  return "$_tui_rc"
 }
 
 tui::_checklist_tty() {
@@ -279,7 +313,10 @@ tui::_checklist_tty() {
 
   declare -F color::supports_unicode >/dev/null 2>&1 && color::supports_unicode && cursor_char='❯'
 
-  for ((i = 0; i < n; i++)); do checked[i]=0; done
+  for ((i = 0; i < n; i++)); do
+    checked[i]=0
+    [[ ${TUI_CHECKLIST_DEFAULT[i]:-0} == 1 ]] && checked[i]=1
+  done
 
   stty_saved=$(stty -g 2>/dev/null) || stty_saved=''
   stty -echo -icanon min 1 time 0 2>/dev/null || true
@@ -371,7 +408,10 @@ tui::_checklist_fallback() {
   local -a checked=()
   local i mark line tok valid all_on
 
-  for ((i = 0; i < n; i++)); do checked[i]=0; done
+  for ((i = 0; i < n; i++)); do
+    checked[i]=0
+    [[ ${TUI_CHECKLIST_DEFAULT[i]:-0} == 1 ]] && checked[i]=1
+  done
 
   while true; do
     printf '\n%s%s%s\n' "${PVX_C[bold]:-}" "$title" "${PVX_C[reset]:-}"
