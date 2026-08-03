@@ -66,12 +66,14 @@ exec::spinner_start() {
     pvx::on_exit exec::spinner_stop
   fi
   tput civis 2>/dev/null >&2 || true
+  printf '\n' >&2
   (
     local -a frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
     local i=0 start=$SECONDS elapsed
+    local color=${PVX_CE[cyan]:-} reset=${PVX_CE[reset]:-}
     while true; do
       elapsed=$((SECONDS - start))
-      printf '\r%s %s (%ds)\033[K' "${frames[i]}" "$label" "$elapsed" >&2
+      printf '\r%s%s%s %s (%ds)\033[K' "$color" "${frames[i]}" "$reset" "$label" "$elapsed" >&2
       i=$(( (i + 1) % ${#frames[@]} ))
       sleep 0.08
     done
