@@ -27,7 +27,7 @@ pvx --help          # lista de comandos e opções globais
 | ------------- | ----------------------------------------------------------------- |
 | `modules`     | instala/remove/atualiza módulos (`list/install/remove/update`)     |
 | `registry`    | consulta/configura o índice remoto de módulos                     |
-| `self-update` | verifica/instala uma versão nova do próprio pvx-core               |
+| `update`      | atualiza o pvx-core e/ou os módulos instalados (`core\|self`, `modules`) |
 | `sysinfo`     | dump read-only de informações do sistema                          |
 | `completion`  | gera/instala o autocomplete do bash                                |
 | `tests`       | roda a suíte de testes do pvx-core                                 |

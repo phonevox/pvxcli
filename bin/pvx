@@ -72,7 +72,7 @@ declare -gA PVX_CORE_CMDS=(
   [cache]='core/reserved:core::cmd_reserved'
   [paths]='core/reserved:core::cmd_reserved'
   [log]='core/reserved:core::cmd_reserved'
-  [self-update]='core/self_update:core::cmd_self_update'
+  [update]='core/update:core::cmd_update'
 )
 declare -gA PVX_CORE_NEEDS_ROOT=()
 
@@ -166,11 +166,11 @@ core::_interactive_menu() {
     [sysinfo]='dump read-only de informações do sistema'
     [completion]='gera/instala o script de autocomplete do bash'
     [tests]='roda a suíte de testes do pvx-core (units/suites)'
-    [self-update]='verifica/instala uma versão nova do pvx-core'
+    [update]='atualiza o pvx-core e/ou os módulos instalados'
     [help]='mostra a ajuda geral ou de um comando'
     [version]='mostra a versão do pvx'
   )
-  local -a order=(modules registry sysinfo completion tests self-update help version)
+  local -a order=(modules registry sysinfo completion tests update help version)
   local -a options=() cmd_names=()
   local c
 
@@ -420,7 +420,7 @@ comandos:
   sysinfo     dump read-only de informações do sistema, ponto de partida de debugging
   completion  gera/instala o script de autocomplete do bash
   tests       roda a suíte de testes do pvx-core (list/run all/run units/run suites)
-  self-update verifica/instala uma versão nova do pvx-core (subcomando "check" só verifica)
+  update      atualiza o pvx-core e os módulos instalados (subcomandos: core|self, modules)
   help        mostra esta ajuda ou --help de um comando
   version     mostra a versão do pvx
 
