@@ -83,16 +83,42 @@ fi
 bin_dir=$(dirname "$BIN_LINK")
 if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
   profile_dir=$(_pvx_sys_dir /etc/profile.d)
+  profile_fixed=0
   if [[ -d $profile_dir ]]; then
     printf 'export PATH="%s:$PATH"\n' "$bin_dir" >"$profile_dir/pvx-path.sh"
     chmod 0644 "$profile_dir/pvx-path.sh"
-    printf 'aviso: %s não estava no PATH — %s/pvx-path.sh criado (sessões novas já funcionam).\n' \
-      "$bin_dir" "$profile_dir" >&2
-    printf 'nesta sessão, rode:\n' >&2
-    printf '  export PATH="%s:$PATH"\n' "$bin_dir" >&2
+    profile_fixed=1
+  fi
+
+  # symlink extra em /usr/bin — só numa instalação real (nunca numa isolada de teste via
+  # PVX_INSTALL_PREFIX, que não deve tocar o sistema real fora do prefix). /usr/local/bin
+  # continua sendo o alvo "de verdade" (FHS: é o diretório certo pra software instalado fora do
+  # gerenciador de pacotes da distro) — isto aqui não inverte essa prioridade, só cobre a SESSÃO
+  # ATUAL enquanto o PATH de verdade ainda não pegou (um script filho não consegue mudar o PATH
+  # do shell que o chamou — nem o pvx-path.sh acima ajuda até a próxima sessão). /usr/bin foi
+  # escolhido por ser, na prática, o único diretório praticamente garantido no PATH mesmo num
+  # PATH mínimo de kickstart (é o mesmo citado no comentário acima).
+  fallback_link=''
+  if [[ -z ${PVX_INSTALL_PREFIX:-} ]]; then
+    fallback_link="/usr/bin/$(basename "$BIN_LINK")"
+    if [[ $fallback_link == "$BIN_LINK" ]]; then
+      fallback_link=''
+    elif [[ -e $fallback_link && ! -L $fallback_link ]]; then
+      printf 'aviso: %s já existe e não é um symlink nosso — não crio o atalho de PATH aí.\n' "$fallback_link" >&2
+      fallback_link=''
+    else
+      ln -sfn "$PREFIX/current/bin/pvx" "$fallback_link"
+    fi
+  fi
+
+  printf 'aviso: %s não estava no PATH.\n' "$bin_dir" >&2
+  ((profile_fixed)) && printf '  sessões novas já funcionam (%s/pvx-path.sh criado).\n' "$profile_dir" >&2
+  if [[ -n $fallback_link ]]; then
+    printf '  criamos um atalho temporário em %s pra "pvx" já funcionar nesta sessão.\n' "$fallback_link" >&2
+    printf '  se quiser fazer do jeito certo agora (só %s no PATH, sem o atalho), copie e cole:\n\n' "$bin_dir" >&2
+    printf '  rm -f %s && export PATH="%s:$PATH"\n\n' "$fallback_link" "$bin_dir" >&2
   else
-    printf 'aviso: %s não está no PATH e %s não existe pra corrigir sozinho — adicione manualmente:\n' \
-      "$bin_dir" "$profile_dir" >&2
+    printf '  nesta sessão, rode:\n' >&2
     printf '  export PATH="%s:$PATH"\n' "$bin_dir" >&2
   fi
 fi

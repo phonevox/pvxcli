@@ -28,6 +28,14 @@ _pvx_sys_dir() {
 }
 
 [[ -L $BIN_LINK ]] && rm -f "$BIN_LINK"
+
+# atalho extra em /usr/bin (ver install.sh) — só existe em instalação real (nunca em isolada de
+# teste via PVX_INSTALL_PREFIX), mesma condição usada lá pra criar.
+if [[ -z ${PVX_INSTALL_PREFIX:-} ]]; then
+  fallback_link="/usr/bin/$(basename "$BIN_LINK")"
+  [[ $fallback_link != "$BIN_LINK" && -L $fallback_link ]] && rm -f "$fallback_link"
+fi
+
 rm -rf "$PREFIX"
 rm -f "$(_pvx_sys_dir /etc/bash_completion.d)/pvx" \
   "$(_pvx_sys_dir /usr/share/bash-completion/completions)/pvx" 2>/dev/null || true
