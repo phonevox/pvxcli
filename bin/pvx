@@ -125,41 +125,14 @@ core::_suggest() {
   return 0
 }
 
-# core::_interactive_menu — `pvx` sem nenhum comando, com TTY de verdade dos dois lados: em
-# vez do texto de ajuda estático, sobe um menu (lib/tui.sh) listando todo comando válido —
-# core, módulo instalado, snippet — e roda o escolhido como um processo novo (não `exec`, de
-# propósito: assim volta pro menu depois, em vez de encerrar o pvx junto com o comando).
-# Sem TTY (script/cron/CI), cai no help de texto de sempre — nunca fica esperando teclado.
-core::_interactive_menu() {
-  pvx::require tui core/self_update cmd_modules
-
-  # best-effort, cacheado (PVX_SELF_UPDATE_TTL) — só bate na rede se o cache expirou, e nunca
-  # atrapalha a abertura do menu se a rede falhar (ver core::_self_update_notify).
-  core::_self_update_notify || true
-  # mesmo padrão, mas pros MÓDULOS instalados (registry ou git direto) — ver
-  # modules::_updates_notify em lib/cmd_modules.sh.
-  modules::_updates_notify || true
-
-  # rede de segurança: cada tui::select/checklist/pause já restaura a própria stty sozinho no
-  # caminho normal (inclusive em Ctrl-C, ver o comentário em tui::_select_tty) — isso aqui é só
-  # a garantia de que, mesmo se algum bug/corrida escapar disso em qualquer nível de submenu, o
-  # terminal nunca fica preso em modo raw depois que o pvx sai: captura o estado UMA vez ao
-  # entrar no menu, e devolve no exit do processo, não importa por onde ele saiu.
-  #
-  # SEM "local" de propósito: o hook de exit só roda DEPOIS que esta função já retornou (o
-  # `trap EXIT` dispara no fim do processo inteiro, não no fim desta função) — uma variável
-  # `local` já teria saído de escopo a essa altura, e o hook quebraria com "unbound variable"
-  # sob `set -u` (achado de verdade rodando no container: o hook falhava antes até de chegar
-  # no `stty`, deixando o terminal exatamente tão travado quanto sem rede de segurança nenhuma).
-  PVX_MENU_STTY_SAVED=$(stty -g 2>/dev/null) || PVX_MENU_STTY_SAVED=''
-  if [[ -n $PVX_MENU_STTY_SAVED ]]; then
-    core::_menu_stty_restore() {
-      stty "$PVX_MENU_STTY_SAVED" 2>/dev/null || true
-      return 0
-    }
-    pvx::on_exit core::_menu_stty_restore
-  fi
-
+# core::_menu_build_options — (re)popula `options`/`cmd_names` (arrays já declaradas pelo
+# chamador, core::_interactive_menu — escrito assim, sem `local` aqui dentro, de propósito:
+# bash resolve `options`/`cmd_names` pelo escopo dinâmico do chamador, então esta função só
+# preenche as arrays que já existem lá, sem precisar de nameref (que pediria bash >=4.3; o
+# projeto trava em >=4.2, ver pvx::require_bash 4 2 logo no topo deste arquivo)). Extraído pra
+# função separada só pra poder ser chamado DE NOVO depois de um submenu "owned" (modules/
+# registry/completion) retornar — ver o comentário no loop de core::_interactive_menu.
+core::_menu_build_options() {
   local -A descriptions=(
     [modules]='gerencia módulos instaláveis (list/install/remove/update/help)'
     [registry]='consulta/configura o índice remoto de módulos'
@@ -171,8 +144,10 @@ core::_interactive_menu() {
     [version]='mostra a versão do pvx'
   )
   local -a order=(modules registry sysinfo completion tests update help version)
-  local -a options=() cmd_names=()
   local c
+
+  options=()
+  cmd_names=()
 
   for c in "${order[@]}"; do
     # install.sh copia tests/ de propósito — numa instalação normal esta checagem sempre
@@ -214,6 +189,45 @@ core::_interactive_menu() {
       cmd_names+=("$f")
     done
   fi
+}
+
+# core::_interactive_menu — `pvx` sem nenhum comando, com TTY de verdade dos dois lados: em
+# vez do texto de ajuda estático, sobe um menu (lib/tui.sh) listando todo comando válido —
+# core, módulo instalado, snippet — e roda o escolhido como um processo novo (não `exec`, de
+# propósito: assim volta pro menu depois, em vez de encerrar o pvx junto com o comando).
+# Sem TTY (script/cron/CI), cai no help de texto de sempre — nunca fica esperando teclado.
+core::_interactive_menu() {
+  pvx::require tui core/self_update cmd_modules
+
+  # best-effort, cacheado (PVX_SELF_UPDATE_TTL) — só bate na rede se o cache expirou, e nunca
+  # atrapalha a abertura do menu se a rede falhar (ver core::_self_update_notify).
+  core::_self_update_notify || true
+  # mesmo padrão, mas pros MÓDULOS instalados (registry ou git direto) — ver
+  # modules::_updates_notify em lib/cmd_modules.sh.
+  modules::_updates_notify || true
+
+  # rede de segurança: cada tui::select/checklist/pause já restaura a própria stty sozinho no
+  # caminho normal (inclusive em Ctrl-C, ver o comentário em tui::_select_tty) — isso aqui é só
+  # a garantia de que, mesmo se algum bug/corrida escapar disso em qualquer nível de submenu, o
+  # terminal nunca fica preso em modo raw depois que o pvx sai: captura o estado UMA vez ao
+  # entrar no menu, e devolve no exit do processo, não importa por onde ele saiu.
+  #
+  # SEM "local" de propósito: o hook de exit só roda DEPOIS que esta função já retornou (o
+  # `trap EXIT` dispara no fim do processo inteiro, não no fim desta função) — uma variável
+  # `local` já teria saído de escopo a essa altura, e o hook quebraria com "unbound variable"
+  # sob `set -u` (achado de verdade rodando no container: o hook falhava antes até de chegar
+  # no `stty`, deixando o terminal exatamente tão travado quanto sem rede de segurança nenhuma).
+  PVX_MENU_STTY_SAVED=$(stty -g 2>/dev/null) || PVX_MENU_STTY_SAVED=''
+  if [[ -n $PVX_MENU_STTY_SAVED ]]; then
+    core::_menu_stty_restore() {
+      stty "$PVX_MENU_STTY_SAVED" 2>/dev/null || true
+      return 0
+    }
+    pvx::on_exit core::_menu_stty_restore
+  fi
+
+  local -a options=() cmd_names=()
+  core::_menu_build_options
 
   if ((${#options[@]} == 0)); then
     pvx::_print_help
@@ -252,6 +266,13 @@ core::_interactive_menu() {
 
     if [[ -n ${owned_submenus[$chosen_cmd]:-} ]]; then
       core::_run_owned_submenu "$chosen_cmd"
+      # reconstrói options/cmd_names: só "modules" muda a lista de comandos de verdade
+      # (install/remove), mas refaz sempre — custo é só alguns grep/stat locais, e evita ter
+      # que lembrar de atualizar isto de novo se "registry"/"completion" um dia passarem a
+      # afetar a lista também. Achado de verdade: sem isto, um módulo instalado por aqui (ex.:
+      # "modules > install > from url") só aparecia no menu depois de sair e abrir o pvx de
+      # novo (processo novo) — options/cmd_names eram montadas uma vez só, antes deste loop.
+      core::_menu_build_options
       continue
     fi
 
