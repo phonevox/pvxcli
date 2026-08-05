@@ -25,6 +25,46 @@ tui::breadcrumb() {
   printf '%s' "$out"
 }
 
+# tui::with_desc <título> [descrição] — junta título + descrição numa string multi-linha pra
+# passar como <título> de tui::select/tui::checklist/tui::password (ou como 3º arg opcional de
+# tui::input): a 1ª linha (breadcrumb) sai em negrito, a(s) linha(s) seguinte(s) — a descrição —
+# em cinza, um nível visual abaixo. Sem <descrição>, devolve só o título puro (retrocompatível
+# com todo chamador que já passa só um breadcrumb).
+tui::with_desc() {
+  local title=$1 desc=${2:-}
+  [[ -z $desc ]] && { printf '%s' "$title"; return 0; }
+  printf '%s\n%s' "$title" "$desc"
+}
+
+# tui::_print_title <título> [prefixo por linha] — usado por tui::select/checklist/password/
+# input: imprime a 1ª linha do título (breadcrumb) em negrito e qualquer linha seguinte
+# (descrição, se o título vier de tui::with_desc) em cinza. `$title` sem "\n" imprime só a
+# linha em negrito, igual sempre foi antes desta função existir.
+tui::_print_title() {
+  local title=$1 prefix=${2:-} first=1 tline
+  while IFS= read -r tline; do
+    if ((first)); then
+      printf '%s%s%s%s\n' "$prefix" "${PVX_C[bold]:-}" "$tline" "${PVX_C[reset]:-}"
+      first=0
+    else
+      printf '%s  %s%s%s\n' "$prefix" "${PVX_C[gray]:-}" "$tline" "${PVX_C[reset]:-}"
+    fi
+  done <<<"$title"
+}
+
+# tui::_title_rows <título> — quantas linhas tui::_print_title vai imprimir pra esse título
+# (1 sem descrição, 2+ com) — usado por tui::_select_tty pra saber quanto `tput cuu` subir no
+# redraw; sem isto, um título com descrição (2 linhas) desalinha o redraw depois do 1º frame
+# (mesma classe de bug já documentada em phonevox_tweaks_menu/tui::checklist).
+tui::_title_rows() {
+  local title=$1 rows=1 rest=$title
+  while [[ $rest == *$'\n'* ]]; do
+    rows=$((rows + 1))
+    rest=${rest#*$'\n'}
+  done
+  printf '%d' "$rows"
+}
+
 # tui::select <título> <item1> [item2 ...]
 tui::select() {
   local title=$1
@@ -53,6 +93,9 @@ tui::_select_tty() {
 
   declare -F color::supports_unicode >/dev/null 2>&1 && color::supports_unicode && cursor_char='❯'
 
+  local title_rows
+  title_rows=$(tui::_title_rows "$title")
+
   stty_saved=$(stty -g 2>/dev/null) || stty_saved=''
   stty -echo -icanon min 1 time 0 2>/dev/null || true
 
@@ -77,7 +120,7 @@ tui::_select_tty() {
     fi
     tput ed 2>/dev/null || true
 
-    printf '%s%s%s\n' "${PVX_C[bold]:-}" "$title" "${PVX_C[reset]:-}"
+    tui::_print_title "$title"
     for ((i = 0; i < n; i++)); do
       if ((i == cur)); then
         printf '  %s%s %s%s\n' "${PVX_C[cyan]:-}" "$cursor_char" "${items[i]}" "${PVX_C[reset]:-}"
@@ -87,7 +130,7 @@ tui::_select_tty() {
     done
     printf '  %s↑/↓ para navegar · enter para selecionar · esc ou ctrl+c para cancelar%s\n' \
       "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
-    rows_drawn=$((n + 2))
+    rows_drawn=$((title_rows + n + 1))
 
     key=''
     if ! IFS= read -rsn1 key; then
@@ -133,7 +176,8 @@ tui::_select_fallback() {
   local i line
 
   TUI_CHOICE=''
-  printf '\n%s%s%s\n' "${PVX_C[bold]:-}" "$title" "${PVX_C[reset]:-}"
+  printf '\n'
+  tui::_print_title "$title"
   for ((i = 0; i < n; i++)); do
     printf '  %2d) %s\n' "$((i + 1))" "${items[i]}"
   done
@@ -214,14 +258,17 @@ tui::pause() {
   return 0
 }
 
-# tui::input <label> [default] — prompt de texto livre (caminho, URL, etc.). Resultado em
-# TUI_INPUT. Linha vazia usa o <default>, se houver; sem default, linha vazia ou EOF (Ctrl-D)
+# tui::input <label> [default] [título] — prompt de texto livre (caminho, URL, etc.). Resultado
+# em TUI_INPUT. Linha vazia usa o <default>, se houver; sem default, linha vazia ou EOF (Ctrl-D)
 # cancela (rc=1) — não trava esperando teclado num pipe fechado (ex: stdin de /dev/null).
+# <título> opcional (breadcrumb, ou breadcrumb+descrição via tui::with_desc) — mesmo cabeçalho
+# de tui::select/checklist/password, pra sub-perguntas não ficarem "soltas" no meio do fluxo.
 tui::input() {
-  local label=$1 default=${2:-}
+  local label=$1 default=${2:-} title=${3:-}
   local prompt line
 
   TUI_INPUT=''
+  [[ -n $title ]] && tui::_print_title "$title" >&2
   if [[ -n $default ]]; then
     printf -v prompt '%s [%s]: ' "$label" "$default"
   else
@@ -262,7 +309,7 @@ tui::password() {
   TUI_PASSWORD=''
   [[ -t 0 ]] || return 0
 
-  printf '%s%s%s\n' "${PVX_C[bold]:-}" "$title" "${PVX_C[reset]:-}" >&2
+  tui::_print_title "$title" >&2
   printf '  %s: ' "$label" >&2
 
   # Ctrl-C aqui é um `read` comum (modo cozido) — ver o comentário equivalente em tui::input.
