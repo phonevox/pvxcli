@@ -53,6 +53,28 @@ pvx::require() {
   done
 }
 
+# pvx::require_init <lib...> — pvx::require + chama <lib>::init logo depois de cada source
+# (só se a função existir; a maioria das libs não tem init nenhum — só color/log/os têm hoje,
+# e os::init já é lazy sozinho via os::_ensure). Pensado pro caso comum de um entrypoint de
+# módulo, que não tem mais nada acontecendo entre "carregar a lib" e "inicializar ela".
+#
+# bin/pvx de propósito NÃO usa isto — continua chamando pvx::require puro + color::init/
+# log::init manuais, porque ele precisa controlar a ORDEM entre isso e o carregamento de
+# /etc/pvx/pvx.conf: color::init roda antes do config (pra existir algo pra color::set_mode
+# recomputar em cima, se o config setar "color = ..."), mas log::init roda DEPOIS do config
+# (pra um "log_dir = ..." do config já valer no primeiro arquivo de log aberto, não só a
+# partir da próxima rotação). Auto-init aqui pra QUALQUER chamador quebraria essa ordem
+# especificamente pro dispatcher — um módulo comum não tem esse problema (não lê pvx.conf
+# global), por isso o atalho é seguro pra ele mas não pro bin/pvx.
+pvx::require_init() {
+  pvx::require "$@"
+  local lib fn
+  for lib in "$@"; do
+    fn="${lib}::init"
+    declare -F "$fn" >/dev/null 2>&1 && "$fn"
+  done
+}
+
 # --- exit hooks: pilha LIFO, nunca sobrescreve `trap EXIT` de outro código -----------------
 _PVX_EXIT_HOOKS=()
 
