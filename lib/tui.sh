@@ -41,6 +41,24 @@ tui::_stty_raw_mode() {
   stty -echo -icanon min 1 time 0 2>/dev/null || true
 }
 
+# tui::is_interactive — true se stdin E stdout são ambos um terminal de verdade. Mesma checagem
+# "[[ -t 0 && -t 1 ]]" que estava duplicada crua em bin/pvx, lib/cmd_modules.sh,
+# lib/core/registry.sh, lib/core/completion.sh e em módulos (ex: netinstall) — nomeada aqui só
+# pra quem PRECISA decidir ANTES de chamar tui::select/checklist/etc (ex: "abro o submenu ou
+# mostro --usage estático?"). As próprias tui::select/checklist/pause continuam fazendo a
+# checagem sozinhas por dentro — esta função não muda nada do comportamento delas.
+#
+# De propósito NÃO usada por lib/exec.sh (exec::confirm, exec::spinner_active) nem por
+# lib/flags.sh (flag::_resolve_secret) mesmo essas tendo checagem de TTY parecida — aquelas
+# libs são "de baixo nível" (run/srun/qrun, parsing de flag) e não devem ganhar uma dependência
+# nova de tui.sh só por causa de uma checagem de 1 linha; cada uma mantém a própria checagem
+# crua, com a semântica exata que precisa (ex: exec::spinner_active olha só stderr, não
+# stdin+stdout — são perguntas diferentes: "alguém está vendo isto animar" vs "dá pra ler tecla
+# E desenhar menu").
+tui::is_interactive() {
+  [[ -t 0 && -t 1 ]]
+}
+
 # tui::breadcrumb [segmento1 segmento2 ...] — monta "HOME > seg1 > ... > segN" pra usar como
 # <título> de tui::select/tui::checklist nos submenus do pvx, com o último segmento (a página
 # atual) em destaque — sem argumento nenhum, é só "HOME".
@@ -120,7 +138,7 @@ tui::select() {
   TUI_CHOICE=''
   ((n == 0)) && return 1
 
-  if [[ -t 0 && -t 1 ]]; then
+  if tui::is_interactive; then
     tui::_select_tty "$title" "${items[@]}"
   else
     tui::_select_fallback "$title" "${items[@]}"
@@ -257,7 +275,7 @@ tui::pause() {
   local label=${1:-'pressione enter pra continuar'}
   TUI_BACK=0
 
-  if [[ ! -t 0 || ! -t 1 ]]; then
+  if ! tui::is_interactive; then
     printf '\n%s%s%s\n' "${PVX_C[gray]:-}" "$label" "${PVX_C[reset]:-}"
     local resp=''
     if ! IFS= read -r resp; then
@@ -384,7 +402,7 @@ tui::checklist() {
   ((n == 0)) && return 0
 
   local _tui_rc=0
-  if [[ -t 0 && -t 1 ]]; then
+  if tui::is_interactive; then
     tui::_checklist_tty "$title" "${items[@]}" || _tui_rc=$?
   else
     tui::_checklist_fallback "$title" "${items[@]}" || _tui_rc=$?

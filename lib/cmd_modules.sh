@@ -32,7 +32,7 @@ modules::_is_git_url() {
 }
 
 # modules::_git_shorthand_expand <org>/<repo> — convenção do time: repositório de módulo é
-# sempre "pvx-mod-<nome>" (ver docs/module-authoring.md) — aceita a forma completa
+# sempre "pvx-mod-<nome>" (ver MODULE_DEVELOPMENT.md) — aceita a forma completa
 # ("org/pvx-mod-nome") ou a curta ("org/nome"), sem o operador ter que lembrar o prefixo toda
 # vez que digitar um install via git.
 modules::_git_shorthand_expand() {
@@ -70,6 +70,7 @@ modules::_resolve_git_target() {
 }
 
 core::cmd_modules() {
+  pvx::require tui
   local sub=${1:-}
   (($#)) && shift
   case $sub in
@@ -81,7 +82,7 @@ core::cmd_modules() {
     '')
       # sem subcomando: com TTY de verdade dos dois lados, abre o submenu; senão (script/CI),
       # mantém o help estático de sempre — nunca fica esperando teclado num ambiente não-interativo.
-      if [[ -t 0 && -t 1 ]]; then
+      if tui::is_interactive; then
         modules::_interactive_menu
       else
         modules::_usage
@@ -339,7 +340,7 @@ modules::cmd_list() {
 
 # --- install ------------------------------------------------------------------------------
 modules::cmd_install() {
-  pvx::require registry json exec os net integrity
+  pvx::require registry json exec os net integrity tui
   local file='' force=0 expected_sha='' ref=''
   local -a names=()
   while (($#)); do
@@ -407,13 +408,12 @@ modules::cmd_install() {
     # sem nome nem --file: só faz sentido perguntar interativamente se tem um TTY de verdade
     # dos dois lados (senão um script/CI ficaria esperando teclado pra sempre) — nesse caso,
     # mantém o erro de uso de sempre.
-    if [[ ! -t 0 || ! -t 1 ]]; then
+    if ! tui::is_interactive; then
       log::error 'install: informe --file <tarball> ou um nome de módulo'
       modules::_usage >&2
       return "$PVX_EXIT_USAGE"
     fi
 
-    pvx::require tui
     registry::refresh || return 4
     local -a available=() installed_names=()
     mapfile -t available < <(registry::list_names 2>/dev/null)
@@ -954,6 +954,15 @@ modules::_apply_update_from_staging() {
 
   local module_dir="$PVX_MODULES_DIR/$name"
   local module_state_dir="$PVX_STATE_DIR/state/$name"
+  # Mesma garantia que modules::_publish_staging já dá no install (e que bin/pvx's
+  # core::_module_export_env agora dá em toda invocação normal) — sem isto, um update cujo
+  # module.json declara "state_dir": true não recriava o diretório se ele não existisse mais
+  # (só o install criava, uma vez). Lido do module.json da versão NOVA (staging), igual
+  # entrypoint/hook_update acima — se a versão nova mudou state_dir de false pra true, o
+  # diretório passa a existir a partir deste update, não só do próximo install do zero.
+  local state_dir_flag
+  state_dir_flag=$(json::get_def "$flat" .state_dir false)
+  [[ $state_dir_flag == true ]] && mkdir -p "$module_state_dir"
   local hook_rc=0
   if [[ -n $hook_update && -r "$staging/$hook_update" ]]; then
     # via "bash <script>", não direto — ver o comentário equivalente em
