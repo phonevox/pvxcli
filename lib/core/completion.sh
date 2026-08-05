@@ -2,13 +2,14 @@
 # lib/core/completion.sh — `pvx completion <shell>`: imprime o script de autocomplete pra
 # stdout (o usuário decide onde instalar — não escrevemos em /etc sozinhos).
 core::cmd_completion() {
+  pvx::require tui
   local shell=${1:-}
   case $shell in
     bash)
       core::_completion_print_bash
       ;;
     '')
-      if [[ -t 0 && -t 1 ]]; then
+      if tui::is_interactive; then
         core::_completion_interactive_menu
       else
         core::_completion_usage

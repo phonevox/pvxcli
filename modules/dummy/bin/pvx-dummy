@@ -7,9 +7,7 @@ set -Eeuo pipefail
 # shellcheck source=/dev/null
 source "$PVX_LIB_DIR/bootstrap.sh"
 pvx::install_traps
-pvx::require color log
-color::init
-log::init
+pvx::require_init color log
 
 dummy::usage() {
   cat <<'EOF'

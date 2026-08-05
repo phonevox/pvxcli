@@ -2,7 +2,7 @@
 # lib/core/registry.sh — `pvx registry`: consulta e configura o índice remoto de módulos
 # (o mesmo mecanismo que `pvx modules install <nome>` usa por baixo).
 core::cmd_registry() {
-  pvx::require registry json net os
+  pvx::require registry json net os tui
 
   local sub=${1:-}
   (($#)) && shift
@@ -13,7 +13,7 @@ core::cmd_registry() {
     refresh) core::_registry_refresh "$@" ;;
     set) core::_registry_set "$@" ;;
     '')
-      if [[ -t 0 && -t 1 ]]; then
+      if tui::is_interactive; then
         core::_registry_interactive_menu
       else
         core::_registry_usage

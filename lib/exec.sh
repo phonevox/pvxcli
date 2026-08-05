@@ -42,11 +42,20 @@ _PVX_SECRET_FILES_HOOK_REGISTERED=0
 PVX_NO_SPINNER=${PVX_NO_SPINNER:-0}
 _PVX_SPINNER_PID=''
 _PVX_SPINNER_HOOK_REGISTERED=0
+_PVX_SPINNER_LABEL_FILE=''
 
 exec::spinner_active() {
   (( PVX_NO_SPINNER )) && return 1
   [[ -t 2 ]] || return 1
   return 0
+}
+
+# exec::_spinner_truncate <label> — mesmo corte de 60 chars usado tanto no start quanto no
+# update, pra nunca quebrar linha em terminal estreito.
+exec::_spinner_truncate() {
+  local label=$1
+  (( ${#label} > 60 )) && label="${label:0:57}..."
+  printf '%s' "$label"
 }
 
 exec::spinner_start() {
@@ -55,8 +64,18 @@ exec::spinner_start() {
   # tempo na mesma linha.
   [[ -n $_PVX_SPINNER_PID ]] && exec::spinner_stop
   exec::spinner_active || return 0
-  local label=$1
-  (( ${#label} > 60 )) && label="${label:0:57}..."
+  local label
+  label=$(exec::_spinner_truncate "$1")
+
+  # Rótulo vive num ARQUIVO, não numa variável capturada pelo subshell abaixo: o `(...) &`
+  # é um processo filho de verdade, com sua própria memória — não existe jeito de uma variável
+  # bash mudar de dentro do processo pai pra dentro de um filho já em execução. Um arquivo
+  # pequeno relido a cada frame (a cada 0.08s, ver o loop abaixo) é o que permite
+  # exec::spinner_update trocar o texto SEM matar/reabrir o subprocesso — preserva o cronômetro
+  # (`start=$SECONDS`, não reinicia) e evita o delay de 0.15s/novo fork a cada atualização.
+  _PVX_SPINNER_LABEL_FILE=$(pvx::tmpdir)/spinner-label.$$
+  printf '%s' "$label" >"$_PVX_SPINNER_LABEL_FILE"
+
   if (( ! _PVX_SPINNER_HOOK_REGISTERED )); then
     _PVX_SPINNER_HOOK_REGISTERED=1
     # registra o cleanup no exit hook ANTES do primeiro spin: se um Ctrl-C interromper o
@@ -76,11 +95,14 @@ exec::spinner_start() {
     tput civis 2>/dev/null >&2 || true
     printf '\n' >&2
     local -a frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
-    local i=0 start=$SECONDS elapsed
+    local i=0 start=$SECONDS elapsed cur_label=$label label_file=$_PVX_SPINNER_LABEL_FILE
     local color=${PVX_CE[cyan]:-} reset=${PVX_CE[reset]:-}
     while true; do
       elapsed=$((SECONDS - start))
-      printf '\r%s%s%s %s (%ds)\033[K' "$color" "${frames[i]}" "$reset" "$label" "$elapsed" >&2
+      # relê o arquivo a cada frame — barato (poucos bytes, local), e é a única forma de
+      # exec::spinner_update alcançar este processo já rodando.
+      [[ -r $label_file ]] && cur_label=$(<"$label_file")
+      printf '\r%s%s%s %s (%ds)\033[K' "$color" "${frames[i]}" "$reset" "$cur_label" "$elapsed" >&2
       i=$(( (i + 1) % ${#frames[@]} ))
       sleep 0.08
     done
@@ -88,11 +110,26 @@ exec::spinner_start() {
   _PVX_SPINNER_PID=$!
 }
 
+# exec::spinner_update <novo-label> — troca o texto de um spinner JÁ ATIVO, sem reiniciar o
+# cronômetro nem reabrir o subprocesso (ao contrário de chamar spinner_start de novo). Uso
+# típico: um loop iterando arquivos/pacotes/passos, atualizando o rótulo a cada iteração.
+# No-op silencioso se não houver spinner ativo (sem TTY, PVX_NO_SPINNER=1, ou spinner_start
+# nunca chamado) — nunca falha, nunca precisa de guarda extra do chamador.
+exec::spinner_update() {
+  [[ -n $_PVX_SPINNER_PID && -n $_PVX_SPINNER_LABEL_FILE ]] || return 0
+  local label
+  label=$(exec::_spinner_truncate "$1")
+  printf '%s' "$label" >"$_PVX_SPINNER_LABEL_FILE" 2>/dev/null || true
+  return 0
+}
+
 exec::spinner_stop() {
   [[ -n $_PVX_SPINNER_PID ]] || return 0
   kill "$_PVX_SPINNER_PID" 2>/dev/null || true
   wait "$_PVX_SPINNER_PID" 2>/dev/null || true
   _PVX_SPINNER_PID=''
+  rm -f "$_PVX_SPINNER_LABEL_FILE" 2>/dev/null || true
+  _PVX_SPINNER_LABEL_FILE=''
   exec::spinner_active && printf '\r\033[K' >&2
   tput cnorm 2>/dev/null >&2 || true
   return 0

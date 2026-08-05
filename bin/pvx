@@ -53,7 +53,7 @@ PVX_OFFLINE=${PVX_OFFLINE:-0}
 PVX_NONINTERACTIVE=${PVX_NONINTERACTIVE:-0}
 export PVX_DRY_RUN PVX_ASSUME_YES PVX_OFFLINE PVX_NONINTERACTIVE
 
-pvx::require color log os paths exec flags
+pvx::require color log os paths exec flags tui
 pvx::install_traps # já pré-aquece invocation_id/tmpdir num shell não-subshell
 
 # --- resolução de comando: extensível via este array (novo tipo = +1 função) -----------------
@@ -335,6 +335,16 @@ core::_module_field_grep() {
 
 # Popula PVX_MODULE_{NAME,VERSION,DIR,STATE_DIR} pro contrato de env do módulo — chamado antes
 # de despachar pra um módulo (tanto na invocação normal quanto na ação `logs`).
+#
+# Garante (mkdir -p) o state dir aqui, TODA vez que o módulo é despachado, se "state_dir": true
+# — não só uma vez no install. Achado de verdade: antes disso, só modules::_publish_staging
+# (lib/cmd_modules.sh, no exato momento do install) criava o diretório; modules::_apply_update_
+# from_staging (update) nunca recriava, e uma ação normal do módulo (o caminho mais comum de
+# todos) nunca garantia nada — PVX_MODULE_STATE_DIR sempre era exportado, mas o diretório podia
+# simplesmente não existir. Todo hook/ação que escrevia lá tinha que se defender sozinho com o
+# próprio "mkdir -p" (ver hooks/install do dummy/netinstall) — a flag "state_dir: true"
+# praticamente não entregava a garantia que o nome sugere. Agora ela entrega de verdade: um
+# "mkdir -p" é barato/idempotente, então garantir de novo em toda invocação não tem custo real.
 core::_module_export_env() {
   local cmd=$1
   PVX_MODULE_NAME=$(core::_module_name_from_cmd "$cmd") || PVX_MODULE_NAME=''
@@ -346,6 +356,7 @@ core::_module_export_env() {
     [[ -r $meta_file ]] && PVX_MODULE_VERSION=$(core::_module_field_grep "$meta_file" version)
     PVX_MODULE_DIR="$PVX_MODULES_DIR/$PVX_MODULE_NAME"
     PVX_MODULE_STATE_DIR="$PVX_STATE_DIR/state/$PVX_MODULE_NAME"
+    core::_module_wants_state_dir "$cmd" && mkdir -p "$PVX_MODULE_STATE_DIR" 2>/dev/null
   fi
   export PVX_MODULE_NAME PVX_MODULE_VERSION PVX_MODULE_DIR PVX_MODULE_STATE_DIR
   return 0
@@ -360,6 +371,16 @@ core::_module_requires_root() {
   meta_file="$PVX_STATE_DIR/modules/$name/module.json"
   [[ -r $meta_file ]] || return 1
   grep -Eq '"requires_root"[[:space:]]*:[[:space:]]*true' "$meta_file"
+}
+
+# Mesmo padrão de core::_module_requires_root, pro campo "state_dir" — ver o comentário em
+# core::_module_export_env pro porquê disso ser checado em toda invocação, não só no install.
+core::_module_wants_state_dir() {
+  local cmd=$1 name meta_file
+  name=$(core::_module_name_from_cmd "$cmd") || return 1
+  meta_file="$PVX_STATE_DIR/modules/$name/module.json"
+  [[ -r $meta_file ]] || return 1
+  grep -Eq '"state_dir"[[:space:]]*:[[:space:]]*true' "$meta_file"
 }
 
 # hook opcional `hooks.logs` de um módulo "serviço" — se declarado no module.json e existir/for
@@ -559,7 +580,7 @@ main() {
   local -a cmd_args=(${rest[@]+"${rest[@]:1}"})
 
   if [[ -z $cmd ]]; then
-    if [[ -t 0 && -t 1 ]]; then
+    if tui::is_interactive; then
       # só aqui: entrando de verdade no modo interativo, não num comando composto qualquer
       # (ex: "pvx modules list" nunca mostra, mesmo sendo a primeira chamada do binário).
       [[ -z ${PVX_LOADASCII_FILE:-} ]] && core::_show_ascii_art "$PVX_ROOT/ASCII.txt"
