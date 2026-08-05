@@ -5,7 +5,10 @@ FROM rockylinux/rockylinux:8.10
 # findutils/git/tar/curl padrão) — instala aqui o que o pvx-core precisa em runtime
 # (findutils pro smoke.sh, git pro `pvx modules install <url-git>`), pra não mascarar
 # nenhuma outra lacuna real de dependência atrás de "a imagem de teste não tinha isso".
-RUN dnf install -y findutils git >/dev/null && dnf clean all
+RUN dnf install -y findutils git procps-ng sudo
+#RUN dnf upgrade -y
+RUN dnf clean all
+
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
