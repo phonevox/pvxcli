@@ -373,6 +373,9 @@ tui::_checklist_tty() {
 
   declare -F color::supports_unicode >/dev/null 2>&1 && color::supports_unicode && cursor_char='❯'
 
+  local title_rows
+  title_rows=$(tui::_title_rows "$title")
+
   for ((i = 0; i < n; i++)); do
     checked[i]=0
     [[ ${TUI_CHECKLIST_DEFAULT[i]:-0} == 1 ]] && checked[i]=1
@@ -395,7 +398,7 @@ tui::_checklist_tty() {
     fi
     tput ed 2>/dev/null || true
 
-    printf '%s%s%s\n' "${PVX_C[bold]:-}" "$title" "${PVX_C[reset]:-}"
+    tui::_print_title "$title"
     for ((i = 0; i < n; i++)); do
       mark=' '
       ((checked[i])) && mark='x'
@@ -407,7 +410,7 @@ tui::_checklist_tty() {
     done
     printf '  %s↑/↓ para navegar · espaço marca · a marca/desmarca tudo · enter para selecionar · esc ou ctrl+c para cancelar%s\n' \
       "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
-    rows_drawn=$((n + 2))
+    rows_drawn=$((title_rows + n + 1))
 
     key=''
     if ! IFS= read -rsn1 key; then
@@ -474,7 +477,8 @@ tui::_checklist_fallback() {
   done
 
   while true; do
-    printf '\n%s%s%s\n' "${PVX_C[bold]:-}" "$title" "${PVX_C[reset]:-}"
+    printf '\n'
+    tui::_print_title "$title"
     for ((i = 0; i < n; i++)); do
       mark=' '
       ((checked[i])) && mark='x'
