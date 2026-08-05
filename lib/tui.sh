@@ -37,31 +37,39 @@ tui::with_desc() {
 }
 
 # tui::_print_title <título> [prefixo por linha] — usado por tui::select/checklist/password/
-# input: imprime a 1ª linha do título (breadcrumb) em negrito e qualquer linha seguinte
-# (descrição, se o título vier de tui::with_desc) em cinza. `$title` sem "\n" imprime só a
-# linha em negrito, igual sempre foi antes desta função existir.
+# input: imprime a 1ª linha do título (breadcrumb) em negrito, no mesmo estilo/cor de sempre;
+# linha(s) seguinte(s) (descrição, se o título vier de tui::with_desc) na cor padrão do
+# terminal (nunca em cinza/dim — legibilidade ruim em vários temas de terminal, achado de
+# verdade), indentadas 2 espaços igual todo o resto da UI (itens, rodapé de ajuda). Com
+# descrição, uma linha em branco depois pra separar "explicação" de "pergunta/interação" —
+# sem descrição (título de 1 linha, comportamento de sempre em todo o resto do código),
+# nenhuma linha extra.
 tui::_print_title() {
-  local title=$1 prefix=${2:-} first=1 tline
+  local title=$1 prefix=${2:-} first=1 has_desc=0 tline
   while IFS= read -r tline; do
     if ((first)); then
       printf '%s%s%s%s\n' "$prefix" "${PVX_C[bold]:-}" "$tline" "${PVX_C[reset]:-}"
       first=0
     else
-      printf '%s  %s%s%s\n' "$prefix" "${PVX_C[gray]:-}" "$tline" "${PVX_C[reset]:-}"
+      printf '%s  %s\n' "$prefix" "$tline"
+      has_desc=1
     fi
   done <<<"$title"
+  ((has_desc)) && printf '%s\n' "$prefix"
 }
 
 # tui::_title_rows <título> — quantas linhas tui::_print_title vai imprimir pra esse título
-# (1 sem descrição, 2+ com) — usado por tui::_select_tty pra saber quanto `tput cuu` subir no
-# redraw; sem isto, um título com descrição (2 linhas) desalinha o redraw depois do 1º frame
-# (mesma classe de bug já documentada em phonevox_tweaks_menu/tui::checklist).
+# (1 sem descrição; N+1 com descrição de N linhas, já contando a linha em branco extra) — usado
+# por tui::_select_tty pra saber quanto `tput cuu` subir no redraw; sem isto, um título com
+# descrição desalinha o redraw depois do 1º frame (mesma classe de bug já documentada em
+# phonevox_tweaks_menu/tui::checklist).
 tui::_title_rows() {
   local title=$1 rows=1 rest=$title
   while [[ $rest == *$'\n'* ]]; do
     rows=$((rows + 1))
     rest=${rest#*$'\n'}
   done
+  ((rows > 1)) && rows=$((rows + 1))
   printf '%d' "$rows"
 }
 
@@ -270,9 +278,9 @@ tui::input() {
   TUI_INPUT=''
   [[ -n $title ]] && tui::_print_title "$title" >&2
   if [[ -n $default ]]; then
-    printf -v prompt '%s [%s]: ' "$label" "$default"
+    printf -v prompt '  %s [%s]: ' "$label" "$default"
   else
-    printf -v prompt '%s: ' "$label"
+    printf -v prompt '  %s: ' "$label"
   fi
 
   # Ctrl-C aqui é um `read` comum (modo cozido, sem stty pra restaurar) — sem este trap, o
