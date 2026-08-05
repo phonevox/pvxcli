@@ -55,7 +55,12 @@ tui::_print_title() {
       has_desc=1
     fi
   done <<<"$title"
+  # `return 0` explícito: sem descrição, `((has_desc))` (0) seria a última instrução da função
+  # e devolveria rc=1 — sob `set -e` (todo o pvx roda assim), UMA chamada solta desta função
+  # pra um título de 1 linha só (o caso mais comum, em todo o resto do código) matava o
+  # processo inteiro. Achado de verdade: reproduzido em produção logo depois do release.
   ((has_desc)) && printf '%s\n' "$prefix"
+  return 0
 }
 
 # tui::_title_rows <título> — quantas linhas tui::_print_title vai imprimir pra esse título
