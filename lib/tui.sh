@@ -9,6 +9,38 @@
 # Ambas: 'q'/ESC/Ctrl-C cancela (rc=1). Sem TTY em stdin/stdout (pipe, cron, CI) cai num modo
 # texto por número — nunca trava esperando teclas de terminal num ambiente não-interativo.
 
+# Rede de segurança pra restaurar o terminal (stty -echo -icanon) mesmo se o trap local de
+# INT/TERM de tui::_select_tty/_checklist_tty por algum motivo não rodar até o fim (ex: um
+# segundo Ctrl-C chegando durante o próprio handler do primeiro) — sem isto, o terminal do
+# operador fica sem eco/canônico pro resto da sessão shell, MESMO depois do processo `pvx` já
+# ter terminado (achado de verdade: reproduzido apertando Ctrl-C repetidamente durante um
+# tui::select). Mesmo padrão já usado no arquivo pra outros hooks de saída (exec::spinner_stop,
+# pvx::_cleanup_tmpdir): estado global + registro único em pvx::on_exit (que SEMPRE roda no
+# fim do processo, via `trap 'pvx::_run_exit_hooks' EXIT` — esse trap nunca é tocado pelos
+# traps locais de INT/TERM/RETURN daqui).
+_PVX_TUI_STTY_SAVED=''
+_PVX_TUI_STTY_HOOK_REGISTERED=0
+
+tui::_stty_restore_failsafe() {
+  [[ -n $_PVX_TUI_STTY_SAVED ]] && stty "$_PVX_TUI_STTY_SAVED" 2>/dev/null
+  return 0
+}
+
+# tui::_stty_raw_mode — usado por tui::_select_tty/_checklist_tty/tui::pause: salva o estado
+# atual do terminal em _PVX_TUI_STTY_SAVED (pro failsafe) e liga o modo raw (-echo -icanon).
+# NUNCA chame via `$(...)`: rodaria a função numa subshell, e as mutações em
+# _PVX_TUI_STTY_SAVED/_PVX_TUI_STTY_HOOK_REGISTERED (globais) morreriam com a subshell sem
+# nunca chegar no shell principal — mesmo achado de verdade já documentado em bootstrap.sh pra
+# pvx::tmpdir/pvx::invocation_id. Chame direto (bare) e leia _PVX_TUI_STTY_SAVED depois.
+tui::_stty_raw_mode() {
+  _PVX_TUI_STTY_SAVED=$(stty -g 2>/dev/null) || _PVX_TUI_STTY_SAVED=''
+  if ((! _PVX_TUI_STTY_HOOK_REGISTERED)); then
+    _PVX_TUI_STTY_HOOK_REGISTERED=1
+    declare -F pvx::on_exit >/dev/null 2>&1 && pvx::on_exit tui::_stty_restore_failsafe
+  fi
+  stty -echo -icanon min 1 time 0 2>/dev/null || true
+}
+
 # tui::breadcrumb [segmento1 segmento2 ...] — monta "HOME > seg1 > ... > segN" pra usar como
 # <título> de tui::select/tui::checklist nos submenus do pvx, com o último segmento (a página
 # atual) em destaque — sem argumento nenhum, é só "HOME".
@@ -109,8 +141,8 @@ tui::_select_tty() {
   local title_rows
   title_rows=$(tui::_title_rows "$title")
 
-  stty_saved=$(stty -g 2>/dev/null) || stty_saved=''
-  stty -echo -icanon min 1 time 0 2>/dev/null || true
+  tui::_stty_raw_mode
+  stty_saved=$_PVX_TUI_STTY_SAVED
 
   tui::_select_tty_restore() {
     [[ -n ${stty_saved:-} ]] && stty "$stty_saved" 2>/dev/null
@@ -238,8 +270,8 @@ tui::pause() {
 
   printf '\n%s%s%s' "${PVX_C[gray]:-}" "$label" "${PVX_C[reset]:-}"
   local stty_saved='' key='' key2=''
-  stty_saved=$(stty -g 2>/dev/null) || stty_saved=''
-  stty -echo -icanon min 1 time 0 2>/dev/null || true
+  tui::_stty_raw_mode
+  stty_saved=$_PVX_TUI_STTY_SAVED
 
   tui::_pause_restore() {
     [[ -n ${stty_saved:-} ]] && stty "$stty_saved" 2>/dev/null
@@ -381,8 +413,8 @@ tui::_checklist_tty() {
     [[ ${TUI_CHECKLIST_DEFAULT[i]:-0} == 1 ]] && checked[i]=1
   done
 
-  stty_saved=$(stty -g 2>/dev/null) || stty_saved=''
-  stty -echo -icanon min 1 time 0 2>/dev/null || true
+  tui::_stty_raw_mode
+  stty_saved=$_PVX_TUI_STTY_SAVED
 
   tui::_checklist_tty_restore() {
     [[ -n ${stty_saved:-} ]] && stty "$stty_saved" 2>/dev/null
