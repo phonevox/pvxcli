@@ -51,3 +51,8 @@ modules/       módulos instaláveis (ex: dummy, pra desenvolvimento do core)
 tests/         suíte de testes (unit + suites)
 docker/        ambiente de teste (Rocky Linux)
 ```
+
+## Criando um módulo
+
+Ver `MODULE_DEVELOPMENT.md` — libs compartilhadas, TUI, spinner, hooks, registry,
+empacotamento, testes, exemplo prático.
