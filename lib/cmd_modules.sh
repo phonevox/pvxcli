@@ -69,6 +69,28 @@ modules::_resolve_git_target() {
   return 1
 }
 
+# modules::_split_ref <alvo> — separa um "@ref" opcional no FINAL do alvo (URL completa ou
+# atalho "org/repo"), imprime "<alvo>\t<ref>" (ref vazio se não tiver). Convenção: "@tag",
+# "@branch" ou "@commit" no final (ex: "phonevox/qint@v1.2.3",
+# "https://github.com/org/repo.git@main") — usada pelo prompt único do wizard interativo
+# (modules::_interactive_install), que junta URL+ref num campo só em vez de duas perguntas.
+#
+# "@" e não "/" ou ":": os outros dois já são usados dentro de uma URL/atalho de verdade (path,
+# porta, SSH). Só corta no ÚLTIMO "@" se o que sobra ANTES dele ainda for, sozinho, uma URL
+# git válida ou um atalho "org/repo" — isso protege o "@" do formato SSH
+# ("git@host:org/repo"), que fica no INÍCIO e nunca sobra um alvo válido se cortado dali.
+modules::_split_ref() {
+  local input=$1 target=$input ref=''
+  if [[ $input == *@* ]]; then
+    local candidate=${input%@*} maybe_ref=${input##*@}
+    if modules::_is_git_url "$candidate" || [[ $candidate =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+      target=$candidate
+      ref=$maybe_ref
+    fi
+  fi
+  printf '%s\t%s\n' "$target" "$ref"
+}
+
 core::cmd_modules() {
   pvx::require tui
   local sub=${1:-}
@@ -171,11 +193,11 @@ modules::_interactive_install() {
   pvx::require tui
 
   local -a options=(
-    'from registry   escolhe módulo(s) do índice remoto configurado'
-    'from file       instala a partir de um tarball local (sem rede)'
-    'from url        instala direto de um repositório git'
+    'from registry            seleciona módulo(s) do índice remoto configurado'
+    'from tar file            instala um módulo a partir de um arquivo tar local'
+    'from git repository      instala um módulo através de um repositório git'
   )
-  local -a keys=(registry file url)
+  local -a keys=(registry tar git)
 
   if ! tui::select "$(tui::breadcrumb modules install)" "${options[@]}"; then
     return 90 # cancelado sem mostrar nada — ver o comentário em modules::_interactive_menu
@@ -190,27 +212,32 @@ modules::_interactive_install() {
 
   case $chosen in
     registry)
-      # sem nomes, modules::cmd_install já mostra o checklist do que ainda não está instalado.
+      # sem nomes, modules::cmd_install já mostra o checklist do que ainda não está instalado —
+      # o breadcrumb "from registry" do checklist em si vive lá (só um ponto de verdade pro
+      # header, já que "pvx modules install" sem args cai no mesmo checklist direto).
       modules::cmd_install || true
       ;;
-    file)
-      if ! tui::input 'caminho do tarball'; then
+    tar)
+      if ! tui::input 'caminho do arquivo tar' '' "$(tui::breadcrumb modules install 'from tar file')"; then
         printf 'cancelado.\n'
         return 0
       fi
       modules::cmd_install --file "$TUI_INPUT" || true
       ;;
-    url)
-      if ! tui::input 'URL do repositório git (ex: https://.../repo.git)'; then
+    git)
+      local title
+      title=$(tui::with_desc "$(tui::breadcrumb modules install 'from git repository')" \
+        '[https://github.com/]dono/repositório[.git] — adicione @tag, @branch ou @commit no final pra fixar uma versão')
+      if ! tui::input 'digite a URL do repositório' '' "$title"; then
         printf 'cancelado.\n'
         return 0
       fi
-      local url=$TUI_INPUT ref=''
-      tui::input 'ref — tag/branch/commit (opcional, enter pra pular)' && ref=$TUI_INPUT
+      local target ref
+      IFS=$'\t' read -r target ref <<<"$(modules::_split_ref "$TUI_INPUT")"
       if [[ -n $ref ]]; then
-        modules::cmd_install "$url" --ref "$ref" || true
+        modules::cmd_install "$target" --ref "$ref" || true
       else
-        modules::cmd_install "$url" || true
+        modules::cmd_install "$target" || true
       fi
       ;;
   esac
@@ -432,7 +459,9 @@ modules::cmd_install() {
       printf 'todos os módulos do registry já estão instalados.\n'
       return 0
     fi
-    if ! tui::checklist 'quais módulos instalar?' "${pickable[@]}"; then
+    local checklist_title
+    checklist_title=$(tui::with_desc "$(tui::breadcrumb modules install 'from registry')" 'quais módulos instalar?')
+    if ! tui::checklist "$checklist_title" "${pickable[@]}"; then
       printf 'cancelado.\n'
       return 0
     fi
