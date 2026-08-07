@@ -368,14 +368,17 @@ exec::confirm() {
     [[ $default == y ]] && return 0
     return 1
   fi
-  local ans=''
+  local ans='' hint='s/N'
+  [[ $default == y ]] && hint='S/n'
   # NÃO usar "read -p": o bash escreve esse prompt em STDERR, não stdout (ver `man bash`) — um
   # "2>/dev/null" na mesma chamada (pensado só como blindagem caso /dev/tty falhe) apagava o
   # prompt inteiro junto. A confirmação ficava invisível e parecia "cancelar sozinha": o
   # usuário via só a tela de antes, apertava enter (respondendo "" a uma pergunta que nunca
   # viu) e caía no default 'n' — achado de verdade em `pvx modules remove`, reproduzido com
   # `script` (pty real) confirmando que o prompt nunca aparecia na sessão.
-  printf '%s ' "$prompt"
+  # Indentação (2 espaços) + hint "[s/N]"/"[S/n]" igual ao `tui::input` — mesma pergunta sem
+  # opções visíveis já confundiu operador real (não sabia se respondia "s"/"sim"/"y").
+  printf '  %s [%s] ' "$prompt" "$hint"
   IFS= read -r ans </dev/tty 2>/dev/null || ans=$default
   [[ -z $ans ]] && ans=$default
   case $ans in
