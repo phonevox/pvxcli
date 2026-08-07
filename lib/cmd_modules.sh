@@ -141,7 +141,7 @@ modules::_interactive_menu() {
   )
   local -a keys=(list install remove update help)
 
-  local i chosen sub_rc
+  local i chosen
   while true; do
     if ! tui::select "$(tui::breadcrumb modules)" "${options[@]}"; then
       return 0
@@ -156,31 +156,22 @@ modules::_interactive_menu() {
     [[ -z $chosen ]] && continue
 
     printf '\n'
-    # "|| sub_rc=$?" em cada ramo de propósito: essas funções já imprimem seu próprio
-    # log::error antes de retornar rc≠0 (ex: update sem registry alcançável) — sem isso, o rc
-    # vazaria como comando solto sob `set -e` e derrubaria o pvx inteiro no meio do menu, em
-    # vez de só mostrar o erro e voltar pro mesmo submenu (achado testando de verdade no
-    # container: `modules update` com registry indisponível crashava a sessão inteira). rc=90
-    # é o sentinel interno "cancelei o picker sem fazer/mostrar nada" (ver
-    # modules::_interactive_install/_remove/_update/_help) — nesse caso pula a pausa embaixo.
-    sub_rc=0
+    # "|| true" em cada ramo, sempre: sob `set -e`, um comando solto de um `case` que retorna
+    # != 0 mata o `pvx` inteiro ali mesmo (mesmo processo, não um subshell) em vez de só voltar
+    # pro submenu — achado de verdade com `modules update` e registry indisponível. Cada
+    # modules::_interactive_* decide POR SI SÓ se pausa no final (fez algo que vale a pena ler)
+    # ou não (cancelou sem mostrar nada) — esta função não precisa saber o motivo, só
+    # despachar. "TUI_BACK=0" antes do case: é uma global escrita por tui::pause (dentro da
+    # função despachada) — sem zerar aqui, uma rodada que não chega a pausar (list, ou um
+    # cancelamento) herdaria por engano o valor deixado pela rodada ANTERIOR.
+    TUI_BACK=0
     case $chosen in
       list) modules::cmd_list || true ;;
-      install) modules::_interactive_install || sub_rc=$? ;;
-      remove) modules::_interactive_remove || sub_rc=$? ;;
-      update) modules::_interactive_update || sub_rc=$? ;;
-      help) modules::_interactive_help || sub_rc=$? ;;
+      install) modules::_interactive_install || true ;;
+      remove) modules::_interactive_remove || true ;;
+      update) modules::_interactive_update || true ;;
+      help) modules::_interactive_help || true ;;
     esac
-
-    # list é só leitura, sem nada demorado, e um picker cancelado sem mostrar nada (rc=90)
-    # também não precisa de pausa nenhuma — voltam direto (mesma lógica de sysinfo/help/version
-    # no menu principal).
-    if [[ $chosen == list ]] || ((sub_rc == 90)); then
-      printf '\n'
-      continue
-    fi
-
-    tui::pause 'pressione enter pra continuar (q/esc volta)'
     ((TUI_BACK)) && return 0
   done
 }
@@ -206,7 +197,7 @@ modules::_interactive_install() {
   local -a keys=(registry tar git)
 
   if ! tui::select "$(tui::breadcrumb modules install)" "${options[@]}"; then
-    return 90 # cancelado sem mostrar nada — ver o comentário em modules::_interactive_menu
+    return 0 # cancelado sem mostrar nada — sem tui::pause, nada pra ler
   fi
   local i chosen=''
   for ((i = 0; i < ${#options[@]}; i++)); do
@@ -247,6 +238,7 @@ modules::_interactive_install() {
       fi
       ;;
   esac
+  tui::pause
   return 0
 }
 
@@ -261,7 +253,7 @@ modules::_interactive_remove() {
   fi
 
   if ! tui::select "$(tui::breadcrumb modules remove)" "${names[@]}"; then
-    return 90 # cancelado sem mostrar nada — ver o comentário em modules::_interactive_menu
+    return 0 # cancelado sem mostrar nada — sem tui::pause, nada pra ler
   fi
   local name=$TUI_CHOICE
 
@@ -270,6 +262,7 @@ modules::_interactive_remove() {
     return 0
   fi
   modules::cmd_remove "$name" || true
+  tui::pause
   return 0
 }
 
@@ -287,13 +280,14 @@ modules::_interactive_update() {
   fi
 
   if ! tui::select "$(tui::breadcrumb modules update)" "${picks[@]}"; then
-    return 90 # cancelado sem mostrar nada — ver o comentário em modules::_interactive_menu
+    return 0 # cancelado sem mostrar nada — sem tui::pause, nada pra ler
   fi
   if [[ $TUI_CHOICE == 'todos (--all)' ]]; then
     modules::cmd_update --all || true
   else
     modules::cmd_update "$TUI_CHOICE" || true
   fi
+  tui::pause
   return 0
 }
 
@@ -308,9 +302,10 @@ modules::_interactive_help() {
   fi
 
   if ! tui::select "$(tui::breadcrumb modules help)" "${names[@]}"; then
-    return 90 # cancelado sem mostrar nada — ver o comentário em modules::_interactive_menu
+    return 0 # cancelado sem mostrar nada — sem tui::pause, nada pra ler
   fi
   modules::cmd_help "$TUI_CHOICE" || true
+  tui::pause
   return 0
 }
 
@@ -332,7 +327,8 @@ modules::cmd_list() {
   names_from_registry=$(registry::list_names 2>/dev/null) || names_from_registry=''
 
   if [[ -z $names_from_registry && ${#installed_version[@]} -eq 0 ]]; then
-    printf 'nenhum módulo instalado, e o índice remoto está indisponível (sem rede/cache ainda).\n'
+    printf 'nenhum módulo instalado, e o índice remoto está indisponível.\n'
+    tui::pause
     return 0
   fi
 
