@@ -43,6 +43,7 @@ core::_registry_interactive_menu() {
 
   local i chosen sub_rc
   while true; do
+    tui::clearscr
     if ! tui::select "$(tui::breadcrumb registry)" "${options[@]}"; then
       return 0
     fi

@@ -59,6 +59,25 @@ tui::is_interactive() {
   [[ -t 0 && -t 1 ]]
 }
 
+# tui::clearscr — limpa a tela (tput clear, com fallback pro comando "clear" se tput falhar ou
+# não existir). No-op sem TTY de verdade — nunca suja um log/pipe/arquivo com código de escape.
+#
+# NÃO é chamado automaticamente por tui::select/checklist/breadcrumb — de propósito: cada tela
+# de menu (breadcrumb + select/checklist) decide POR SI SÓ se limpa a tela antes de desenhar.
+# Um fluxo que precisa manter conteúdo visível JUNTO com o próximo prompt (ex: mostrar um
+# resumo de config antes de pedir confirmação) não pode perder isso só por chamar
+# tui::select/breadcrumb — automatizar aqui dentro removeria esse controle do chamador.
+tui::clearscr() {
+  tui::is_interactive || return 0
+  # SEMPRE em stderr (>&2), nunca stdout — mesma regra de tui::password/tui::_print_title:
+  # algumas telas vivem dentro de uma função cujo stdout é CAPTURADO via $(...) por quem chama
+  # (ex: netinstall::ask_password, capturada por netinstall::resolve_secret_or_ask, que devolve
+  # a senha). Em stdout, o código de limpar tela viraria parte do valor capturado em vez de
+  # chegar no terminal de verdade.
+  { tput clear 2>/dev/null || clear 2>/dev/null; } >&2 || true
+  return 0
+}
+
 # tui::breadcrumb [segmento1 segmento2 ...] — monta "HOME > seg1 > ... > segN" pra usar como
 # <título> de tui::select/tui::checklist nos submenus do pvx, com o último segmento (a página
 # atual) em destaque — sem argumento nenhum, é só "HOME".

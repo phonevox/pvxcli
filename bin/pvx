@@ -271,6 +271,7 @@ core::_interactive_menu() {
 
   local i chosen_cmd
   while true; do
+    tui::clearscr
     if ! tui::select "$(tui::breadcrumb)" "${options[@]}"; then
       return 0
     fi

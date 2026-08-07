@@ -62,6 +62,7 @@ core::_completion_interactive_menu() {
   )
   local -a keys=(auto show)
 
+  tui::clearscr
   if ! tui::select "$(tui::breadcrumb completion)" "${options[@]}"; then
     return 0
   fi

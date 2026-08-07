@@ -143,6 +143,7 @@ modules::_interactive_menu() {
 
   local i chosen
   while true; do
+    tui::clearscr
     if ! tui::select "$(tui::breadcrumb modules)" "${options[@]}"; then
       return 0
     fi
@@ -196,6 +197,7 @@ modules::_interactive_install() {
   )
   local -a keys=(registry tar git)
 
+  tui::clearscr
   if ! tui::select "$(tui::breadcrumb modules install)" "${options[@]}"; then
     return 0 # cancelado sem mostrar nada — sem tui::pause, nada pra ler
   fi
@@ -215,6 +217,7 @@ modules::_interactive_install() {
       modules::cmd_install || true
       ;;
     tar)
+      tui::clearscr
       if ! tui::input 'caminho do arquivo tar' '' "$(tui::breadcrumb modules install 'from tar file')"; then
         printf 'cancelado.\n'
         return 0
@@ -225,6 +228,7 @@ modules::_interactive_install() {
       local title
       title=$(tui::with_desc "$(tui::breadcrumb modules install 'from git repository')" \
         '[https://github.com/]dono/repositório[.git] — adicione @tag, @branch ou @commit no final pra fixar uma versão')
+      tui::clearscr
       if ! tui::input 'digite a URL do repositório' '' "$title"; then
         printf 'cancelado.\n'
         return 0
@@ -252,6 +256,7 @@ modules::_interactive_remove() {
     return 0
   fi
 
+  tui::clearscr
   if ! tui::select "$(tui::breadcrumb modules remove)" "${names[@]}"; then
     return 0 # cancelado sem mostrar nada — sem tui::pause, nada pra ler
   fi
@@ -279,6 +284,7 @@ modules::_interactive_update() {
     return 0
   fi
 
+  tui::clearscr
   if ! tui::select "$(tui::breadcrumb modules update)" "${picks[@]}"; then
     return 0 # cancelado sem mostrar nada — sem tui::pause, nada pra ler
   fi
@@ -301,6 +307,7 @@ modules::_interactive_help() {
     return 0
   fi
 
+  tui::clearscr
   if ! tui::select "$(tui::breadcrumb modules help)" "${names[@]}"; then
     return 0 # cancelado sem mostrar nada — sem tui::pause, nada pra ler
   fi
@@ -463,6 +470,7 @@ modules::cmd_install() {
     fi
     local checklist_title
     checklist_title=$(tui::with_desc "$(tui::breadcrumb modules install 'from registry')" 'quais módulos instalar?')
+    tui::clearscr
     if ! tui::checklist "$checklist_title" "${pickable[@]}"; then
       printf 'cancelado.\n'
       return 0
