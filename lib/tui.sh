@@ -119,7 +119,14 @@ tui::_print_title() {
 # descrição desalinha o redraw depois do 1º frame (mesma classe de bug já documentada em
 # phonevox_tweaks_menu/tui::checklist).
 tui::_title_rows() {
-  local title=$1 rows=1 rest=$title
+  local title=$1
+  # "local a=$1 b=$a" NUM SÓ statement: sob `set -u`, "$title" ainda não existe no escopo
+  # desta função enquanto o resto do MESMO `local` é avaliado — só não quebrava até agora por
+  # coincidência de nome (todo chamador de hoje também guarda o breadcrumb numa variável
+  # local chamada "title", e o escopo dinâmico do bash cai pra ELA em vez de dar erro).
+  # Reproduzido de verdade passando um valor por uma variável de OUTRO nome: "title: unbound
+  # variable". Precisa de um `local` próprio antes de reusar "$title".
+  local rows=1 rest=$title
   while [[ $rest == *$'\n'* ]]; do
     rows=$((rows + 1))
     rest=${rest#*$'\n'}

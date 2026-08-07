@@ -80,7 +80,13 @@ modules::_resolve_git_target() {
 # git válida ou um atalho "org/repo" — isso protege o "@" do formato SSH
 # ("git@host:org/repo"), que fica no INÍCIO e nunca sobra um alvo válido se cortado dali.
 modules::_split_ref() {
-  local input=$1 target=$input ref=''
+  local input=$1
+  # "local a=$1 b=$a" NUM SÓ statement falha sob `set -u`: bash expande os RHS de um `local`
+  # com vários nomes antes de qualquer um deles existir no escopo local — "$input" ainda não
+  # está "criado" quando "target=$input" é avaliado, e sem um "input" externo pra herdar, dá
+  # "input: unbound variable". Achado de verdade (reproduzido também em bash 5.3, não é só
+  # bash antigo) — precisa de um `local` PRÓPRIO só pra "input" antes de reusar o valor.
+  local target=$input ref=''
   if [[ $input == *@* ]]; then
     local candidate=${input%@*} maybe_ref=${input##*@}
     if modules::_is_git_url "$candidate" || [[ $candidate =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then

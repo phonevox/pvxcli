@@ -1096,6 +1096,17 @@ antes de considerar um módulo pronto:
 - [ ] Em qualquer menu interativo (seu ou reaproveitando um padrão do core), toda ação
       despachada por `case` precisa de `|| true` (ou `|| rc=$?` + tratamento) — senão um rc≠0
       derruba a sessão inteira em vez de só voltar pro menu.
+- [ ] **`local a=$1 b=$a` numa linha só quebra sob `set -u`** — bash expande os valores de
+      TODOS os nomes de um `local` antes de "criar" qualquer um deles no escopo atual; `$a` em
+      `b=$a` ainda não existe localmente ali, e sem um `a` externo pra herdar dá `a: unbound
+      variable`. Pior: se quem CHAMA a função por acaso já tem uma variável de mesmo nome (`a`)
+      no próprio escopo, o escopo dinâmico do bash cai nela silenciosamente e o bug não
+      aparece — até alguém chamar a função a partir de uma variável de outro nome (achado de
+      verdade 3x: `modules/firewall/lib/common.sh`, `lib/tui.sh:tui::_title_rows`,
+      `lib/cmd_modules.sh:modules::_split_ref` — a última "funcionava" só porque toda função
+      que a chamava guardava o valor numa variável também chamada `title`/igual). Sempre que
+      uma atribuição de `local` depender do valor de outra do MESMO `local`, separe em dois
+      `local`s: `local a=$1` seguido de `local b=$a ...`.
 - [ ] Uma função cuja última linha literal é `[[ cond ]] && return 0` retorna `1` quando `cond`
       é falsa, mesmo sem erro nenhum — termine com `return 0` explícito quando for essa a
       intenção.
