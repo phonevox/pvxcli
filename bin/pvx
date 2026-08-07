@@ -263,12 +263,6 @@ core::_interactive_menu() {
   # depois de voltar de um submenu cancelado.
   local -A owned_submenus=([modules]=1 [registry]=1 [completion]=1)
 
-  # Esses três têm saída curta e nenhum estado próprio pra ler com calma (diferente de
-  # "tests", que abre o próprio menu multi-tela do tests/run, ou de um módulo instalado, cuja
-  # saída pode ser longa/importante de ler) — voltam pro menu principal sozinhos, sem precisar
-  # de nenhuma tecla.
-  local -A instant_return=([sysinfo]=1 [help]=1 [version]=1)
-
   local i chosen_cmd
   while true; do
     tui::clearscr
@@ -305,11 +299,10 @@ core::_interactive_menu() {
     # não só teórico — precisa voltar pro menu, não matar a sessão inteira do pvx.
     "$PVX_BIN_DIR/pvx" "$chosen_cmd" || true
 
-    if [[ -n ${instant_return[$chosen_cmd]:-} ]]; then
-      printf '\n'
-      continue
-    fi
-
+    # sempre pausa antes de voltar ao topo do loop: a próxima iteração já limpa a tela
+    # (tui::clearscr) — sem pausar aqui, a saída de QUALQUER comando (mesmo "curta" como
+    # sysinfo/help/version) pisca e some antes de dar tempo de ler. Achado de verdade com
+    # "pvx modules list" (mesma classe de bug, ver modules::_interactive_list).
     tui::pause 'pressione qualquer tecla para continuar'
     ((TUI_BACK)) && return 0
   done

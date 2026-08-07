@@ -167,7 +167,7 @@ modules::_interactive_menu() {
     # cancelamento) herdaria por engano o valor deixado pela rodada ANTERIOR.
     TUI_BACK=0
     case $chosen in
-      list) modules::cmd_list || true ;;
+      list) modules::_interactive_list || true ;;
       install) modules::_interactive_install || true ;;
       remove) modules::_interactive_remove || true ;;
       update) modules::_interactive_update || true ;;
@@ -185,6 +185,17 @@ modules::_installed_names() {
     [[ -z $name ]] && continue
     printf '%s\n' "$name"
   done <<<"$rows"
+}
+
+# modules::_interactive_list — wrapper de menu pra modules::cmd_list (mesma razão dos outros
+# quatro _interactive_*): cmd_list também é comando direto de CLI ("pvx modules list" num
+# script), não pode chamar tui::pause sozinha (travaria esperando tecla fora de menu). Sem
+# isto, "list" imprimia a tabela e o próprio loop já limpava a tela no frame seguinte antes de
+# dar tempo de ler — achado testando de verdade.
+modules::_interactive_list() {
+  modules::cmd_list || true
+  tui::pause
+  return 0
 }
 
 modules::_interactive_install() {
@@ -335,7 +346,6 @@ modules::cmd_list() {
 
   if [[ -z $names_from_registry && ${#installed_version[@]} -eq 0 ]]; then
     printf 'nenhum módulo instalado, e o índice remoto está indisponível.\n'
-    tui::pause
     return 0
   fi
 

@@ -61,8 +61,7 @@ core::_registry_interactive_menu() {
     # rc≠0 (ex: refresh sem rede/cache) — sem isso, o rc vazaria como comando solto sob `set -e`
     # e derrubaria o pvx inteiro em vez de só mostrar o erro e voltar pro mesmo submenu (mesmo
     # achado de lib/cmd_modules.sh, testado de verdade no container). rc=90 é o sentinel
-    # interno "cancelei sem fazer/mostrar nada de útil" (ver core::_registry_interactive_set) —
-    # nesse caso pula a pausa embaixo, igual list/status/refresh.
+    # interno "cancelei sem fazer/mostrar nada de útil" (ver core::_registry_interactive_set).
     sub_rc=0
     case $chosen in
       status) core::_registry_status || true ;;
@@ -78,11 +77,11 @@ core::_registry_interactive_menu() {
       set) core::_registry_interactive_set || sub_rc=$? ;;
     esac
 
-    # status/list/refresh(--force) são só leitura/rápidos — voltam direto, sem pausa (mesma
-    # lógica de sysinfo/help/version no menu principal e de "modules list"). "set" cancelado
-    # sem fazer/mostrar nada de útil (rc=90) também volta direto; só um "set" bem-sucedido (ou
-    # o erro de "precisa de root") pausa pra dar tempo de ler.
-    if [[ $chosen != set ]] || ((sub_rc == 90)); then
+    # SÓ "cancelei sem fazer/mostrar nada de útil" (rc=90) pula a pausa. Todo o resto pausa
+    # antes de voltar — a próxima iteração já limpa a tela (tui::clearscr), sem pausar aqui a
+    # saída de status/list/refresh pisca e some antes de dar tempo de ler (mesmo achado de
+    # "pvx modules list", ver modules::_interactive_list).
+    if ((sub_rc == 90)); then
       printf '\n'
       continue
     fi
