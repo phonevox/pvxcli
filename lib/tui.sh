@@ -128,6 +128,22 @@ tui::_title_rows() {
   printf '%d' "$rows"
 }
 
+# tui::header <texto> — marca um item de tui::select/tui::_select_fallback como cabeçalho de
+# GRUPO: não-selecionável, navegação por seta pula por cima (tui::_select_tty) / não ganha
+# número (tui::_select_fallback), renderizado sem cursor/bullet. Usa um byte de controle (SOH,
+# "\x01") como sentinela no início da string — nunca aparece em texto normal nem em sequência
+# ANSI (que sempre começa em ESC, "\x1b"), então nunca colide com um item de verdade. Pensado
+# pra separar visualmente categorias distintas numa lista só (ex: "comandos" / "módulos" /
+# "snippets" no menu principal do pvx, ver core::_menu_build_options em bin/pvx) sem precisar
+# de N chamadas separadas a tui::select (que perderia a navegação contínua entre grupos).
+tui::header() {
+  printf '\x01%s' "$1"
+}
+
+tui::_is_header() {
+  [[ $1 == $'\x01'* ]]
+}
+
 # tui::select <título> <item1> [item2 ...]
 tui::select() {
   local title=$1
@@ -150,9 +166,20 @@ tui::_select_tty() {
   shift
   local -a items=("$@")
   local n=${#items[@]}
-  local i cur=0 cursor_char='>'
+  local i cursor_char='>'
   local key key2 key3 rows_drawn=0 cancelled=0 chosen=-1
   local stty_saved=''
+
+  # posições navegáveis, excluindo cabeçalhos de grupo (tui::header) — pré-computado uma vez,
+  # não recalculado a cada tecla. `cur_idx` (estado real do cursor) indexa DENTRO deste array;
+  # `cur` (índice em `items`, usado só pra renderizar/escolher) é derivado dele a cada frame.
+  local -a selectable=()
+  for ((i = 0; i < n; i++)); do
+    tui::_is_header "${items[i]}" || selectable+=("$i")
+  done
+  local m=${#selectable[@]}
+  ((m == 0)) && return 1
+  local cur_idx=0 cur=${selectable[0]}
 
   declare -F color::supports_unicode >/dev/null 2>&1 && color::supports_unicode && cursor_char='❯'
 
@@ -185,7 +212,9 @@ tui::_select_tty() {
 
     tui::_print_title "$title"
     for ((i = 0; i < n; i++)); do
-      if ((i == cur)); then
+      if tui::_is_header "${items[i]}"; then
+        printf '  %s%s%s\n' "${PVX_C[bold]:-}" "${items[i]#?}" "${PVX_C[reset]:-}"
+      elif ((i == cur)); then
         printf '  %s%s %s%s\n' "${PVX_C[cyan]:-}" "$cursor_char" "${items[i]}" "${PVX_C[reset]:-}"
       else
         printf '    %s\n' "${items[i]}"
@@ -214,8 +243,14 @@ tui::_select_tty() {
     fi
 
     case $key in
-      '[A' | k | K) cur=$(((cur - 1 + n) % n)) ;;
-      '[B' | j | J) cur=$(((cur + 1) % n)) ;;
+      '[A' | k | K)
+        cur_idx=$(((cur_idx - 1 + m) % m))
+        cur=${selectable[cur_idx]}
+        ;;
+      '[B' | j | J)
+        cur_idx=$(((cur_idx + 1) % m))
+        cur=${selectable[cur_idx]}
+        ;;
       '') chosen=$cur; break ;; # enter
       q | Q | $'\x1b') cancelled=1; break ;;
     esac
@@ -241,8 +276,16 @@ tui::_select_fallback() {
   TUI_CHOICE=''
   printf '\n'
   tui::_print_title "$title"
+  # cabeçalhos de grupo (tui::header) não ganham número — a numeração conta só os itens de
+  # verdade, então `numbered[k]` mapeia "número exibido k+1" de volta pro índice real em `items`.
+  local -a numbered=()
   for ((i = 0; i < n; i++)); do
-    printf '  %2d) %s\n' "$((i + 1))" "${items[i]}"
+    if tui::_is_header "${items[i]}"; then
+      printf '  %s\n' "${items[i]#?}"
+    else
+      numbered+=("$i")
+      printf '  %2d) %s\n' "${#numbered[@]}" "${items[i]}"
+    fi
   done
   printf '  %sdigite o número · q cancela%s\n' "${PVX_C[gray]:-}" "${PVX_C[reset]:-}"
 
@@ -255,9 +298,9 @@ tui::_select_fallback() {
     case $line in
       q | Q | sair | SAIR) return 1 ;;
       *)
-        if [[ $line =~ ^[0-9]+$ ]] && ((line >= 1 && line <= n)); then
+        if [[ $line =~ ^[0-9]+$ ]] && ((line >= 1 && line <= ${#numbered[@]})); then
           # shellcheck disable=SC2034 # lido pelo chamador depois que esta função retorna
-          TUI_CHOICE=${items[line - 1]}
+          TUI_CHOICE=${items[numbered[line - 1]]}
           return 0
         fi
         printf '  entrada não reconhecida: %s\n' "$line"

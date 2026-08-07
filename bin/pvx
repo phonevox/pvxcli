@@ -133,37 +133,61 @@ core::_suggest() {
 # função separada só pra poder ser chamado DE NOVO depois de um submenu "owned" (modules/
 # registry/completion) retornar — ver o comentário no loop de core::_interactive_menu.
 core::_menu_build_options() {
-  local -A descriptions=(
-    [modules]='gerencia módulos instaláveis (list/install/remove/update/help)'
-    [registry]='consulta/configura o índice remoto de módulos'
-    [sysinfo]='dump read-only de informações do sistema'
-    [completion]='gera/instala o script de autocomplete do bash'
+  local -A core_descriptions=(
+    [modules]='consulta e configurações de módulos'
+    [registry]='configuração do índice de módulos'
+    [completion]='gera ou instala o script de autocomplete de comandos'
     [tests]='roda a suíte de testes do pvx-core (units/suites)'
-    [update]='atualiza o pvx-core e/ou os módulos instalados'
-    [help]='mostra a ajuda geral ou de um comando'
-    [version]='mostra a versão do pvx'
+    [update]='atualizações do pvxcli e/ou módulos instalados'
+    [help]='exibe a ajuda'
+    [version]='exibe a versão desta ferramenta'
   )
-  local -a order=(modules registry sysinfo completion tests update help version)
-  local c
+  local -a core_order=(modules registry completion tests update help version)
+  # curada só pra descrição amigável — qualquer snippet sem entrada aqui ainda aparece, com
+  # descrição genérica ("comando builtin"), ver o loop de "snippets" abaixo.
+  local -A snippet_descriptions=([sysinfo]='informações sobre o sistema')
+  local c f
 
   options=()
   cmd_names=()
 
-  for c in "${order[@]}"; do
+  # Três grupos, sempre nesta ordem, cada um com seu próprio `tui::header` — SEPARAÇÃO CLARA
+  # entre "comandos" (core, embutido no próprio bin/pvx), "módulos" (instalados via `pvx
+  # modules install`, processo/versão/hooks próprios) e "snippets" (arquivo único em
+  # share/pvx/snippets/, in-process, sem ciclo de vida) — são três conceitos diferentes (ver
+  # MODULE_DEVELOPMENT.md §1-2), o menu não devia misturar tudo numa lista só.
+  local -a grp=()
+
+  # --- comandos (core) ------------------------------------------------------------------------
+  grp=()
+  for c in "${core_order[@]}"; do
     # install.sh copia tests/ de propósito — numa instalação normal esta checagem sempre
     # passa. Só falta em release antigo/instalação incompleta (ver lib/core/tests.sh); nesse
     # caso, esconde a opção em vez de listar algo que sempre daria erro.
     [[ $c == tests && ! -x "$PVX_ROOT/tests/run" ]] && continue
-    if [[ -n ${PVX_CORE_CMDS[$c]:-} ]] || [[ -r "$PVX_ROOT/share/pvx/snippets/$c.sh" ]]; then
-      options+=("$(printf '%-12s %s' "$c" "${descriptions[$c]:-}")")
-      cmd_names+=("$c")
-    fi
+    [[ -n ${PVX_CORE_CMDS[$c]:-} ]] || continue
+    grp+=("$c")
   done
+  if ((${#grp[@]})); then
+    options+=("$(tui::header comandos)")
+    cmd_names+=('')
+    for c in "${grp[@]}"; do
+      options+=("$(printf '%-12s %s' "$c" "${core_descriptions[$c]:-}")")
+      cmd_names+=("$c")
+    done
+  fi
 
+  # --- módulos instalados ----------------------------------------------------------------------
+  grp=()
   if [[ -d $PVX_STATE_DIR/commands ]]; then
     for c in "$PVX_STATE_DIR"/commands/*; do
-      [[ -e $c || -L $c ]] || continue
-      c=${c##*/}
+      [[ -e $c || -L $c ]] && grp+=("${c##*/}")
+    done
+  fi
+  if ((${#grp[@]})); then
+    options+=("$(tui::header módulos)")
+    cmd_names+=('')
+    for c in "${grp[@]}"; do
       local meta_file="$PVX_STATE_DIR/modules/$c/module.json" summary=''
       [[ -r $meta_file ]] && summary=$(core::_module_field_grep "$meta_file" summary)
       options+=("$(printf '%-12s %s' "$c" "${summary:-módulo instalado}")")
@@ -171,21 +195,18 @@ core::_menu_build_options() {
     done
   fi
 
+  # --- snippets --------------------------------------------------------------------------------
+  grp=()
   if [[ -d "$PVX_ROOT/share/pvx/snippets" ]]; then
-    local f already
     for f in "$PVX_ROOT"/share/pvx/snippets/*.sh; do
-      [[ -e $f ]] || continue
-      f=${f##*/}
-      f=${f%.sh}
-      already=0
-      for c in ${cmd_names[@]+"${cmd_names[@]}"}; do
-        [[ $c == "$f" ]] && {
-          already=1
-          break
-        }
-      done
-      ((already)) && continue # já listado acima via a lista curada em $order
-      options+=("$(printf '%-12s %s' "$f" 'comando embutido')")
+      [[ -e $f ]] && grp+=("$(basename "$f" .sh)")
+    done
+  fi
+  if ((${#grp[@]})); then
+    options+=("$(tui::header snippets)")
+    cmd_names+=('')
+    for f in "${grp[@]}"; do
+      options+=("$(printf '%-12s %s' "$f" "${snippet_descriptions[$f]:-comando builtin}")")
       cmd_names+=("$f")
     done
   fi
