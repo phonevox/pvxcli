@@ -73,6 +73,15 @@ pvx::require_init() {
     fn="${lib}::init"
     declare -F "$fn" >/dev/null 2>&1 && "$fn"
   done
+  # `return 0` explícito: sem isto, se a ÚLTIMA lib da lista não tiver "::init" (o caso mais
+  # comum — só color/log/os têm hoje), o `&&` da última iteração do loop nunca roda o lado
+  # direito, o `for` termina com o rc=1 do `declare -F` que falhou, e essa vira a última
+  # instrução da função — sob `set -e` (todo entrypoint de módulo roda assim), UMA chamada
+  # solta de `pvx::require_init` terminando numa lib sem init (ex: "... tui flags") matava o
+  # processo inteiro. Mesma classe de bug já documentada em tui::_print_title/
+  # core::_completion_interactive_menu — achado de verdade escrevendo o teste de módulo do
+  # qint, não em produção desta vez, mas o padrão é idêntico.
+  return 0
 }
 
 # --- exit hooks: pilha LIFO, nunca sobrescreve `trap EXIT` de outro código -----------------

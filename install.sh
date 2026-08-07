@@ -116,7 +116,7 @@ if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
   if [[ -n $fallback_link ]]; then
     printf '  criamos um atalho temporário em %s pra "pvx" já funcionar nesta sessão.\n' "$fallback_link" >&2
     printf '  se quiser fazer do jeito certo agora (só %s no PATH, sem o atalho), copie e cole:\n\n' "$bin_dir" >&2
-    printf '  rm -f %s && export PATH="%s:$PATH"\n\n' "$fallback_link" "$bin_dir" >&2
+    printf 'rm -f %s && export PATH="%s:$PATH"\n\n' "$fallback_link" "$bin_dir" >&2
   else
     printf '  nesta sessão, rode:\n' >&2
     printf '  export PATH="%s:$PATH"\n' "$bin_dir" >&2

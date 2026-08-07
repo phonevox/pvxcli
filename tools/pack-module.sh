@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# tools/pack-module.sh <diretório-do-módulo> — empacota um módulo em tarball de release,
-# gerando SHA256SUMS na raiz do pacote. Uso: tools/pack-module.sh modules/dummy
+# tools/pack-module.sh [--install] <diretório-do-módulo> — empacota um módulo em tarball de
+# release, gerando SHA256SUMS na raiz do pacote. Uso: tools/pack-module.sh modules/dummy
 #
 # Gera dist/pvx-mod-<nome>-<versão>.tar.gz + dist/pvx-mod-<nome>-<versão>.tar.gz.sha256,
 # com o diretório de topo dentro do tarball sendo "<nome>-<versão>/".
+#
+# --install: depois de empacotar, chama `bin/pvx modules install --file <tarball> --sha256
+# <hash>` de verdade (processo novo, não em-processo) — mesmo binário/caminho que um usuário
+# rodaria à mão, então herda os mesmos defaults de PVX_STATE_DIR/PVX_MODULES_DIR/etc e o
+# carregamento de /etc/pvx/pvx.conf. Sem --force: se a mesma versão já estiver instalada,
+# falha com o erro normal do install (rode de novo com a versão bumped, ou instale via CLI
+# direto com --force se for reinstalar por cima da mesma versão de propósito).
 set -Eeuo pipefail
 
 # no macOS, `tar`/`cp` embutem arquivos-sidecar "._nome" (AppleDouble, resource fork/xattrs)
@@ -24,11 +31,28 @@ pvx::require color log json registry integrity
 color::init
 log::init
 
-if [[ $# -lt 1 ]]; then
-  printf 'uso: %s <diretório-do-módulo>\n' "$0" >&2
+install=0
+module_dir=''
+while (($#)); do
+  case $1 in
+    --install)
+      install=1
+      shift
+      ;;
+    -*)
+      printf 'uso: %s [--install] <diretório-do-módulo>\n' "$0" >&2
+      exit 2
+      ;;
+    *)
+      module_dir=$1
+      shift
+      ;;
+  esac
+done
+if [[ -z $module_dir ]]; then
+  printf 'uso: %s [--install] <diretório-do-módulo>\n' "$0" >&2
   exit 2
 fi
-module_dir=$1
 
 if [[ ! -d $module_dir ]]; then
   log::error 'diretório não encontrado: %s' "$module_dir"
@@ -70,3 +94,8 @@ printf '%s  %s\n' "$hash" "$(basename "$tarball")" >"$tarball.sha256"
 
 log::info 'gerado: %s (sha256=%s)' "$tarball" "$hash"
 printf '%s\n' "$tarball"
+
+if ((install)); then
+  log::info 'instalando módulo %s (--install)...' "$name"
+  "$PVX_ROOT/bin/pvx" modules install --file "$tarball" --sha256 "$hash"
+fi
