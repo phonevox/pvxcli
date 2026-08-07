@@ -1,0 +1,66 @@
+name: Auto Release
+
+# Dispara quando o workflow "CI" (ci.yml) TERMINA em `main` (merge de dev, ou push direto) —
+# nunca antes de main estar verde. Bumpa VERSION (patch) sozinho, cria a tag "vX.Y.Z" e chama
+# tools/make-release.sh (mesma lógica do release.yml manual). Existe porque um core fix real
+# (exec::confirm) foi parar em main sem ninguém bumpar VERSION — self-update nunca pegou.
+#
+# Se VERSION já tiver sido bumpada manualmente no commit que disparou o CI (ex: alguém quis um
+# minor/major de propósito, "0.3.0"), respeita esse valor em vez de somar patch em cima — só
+# auto-incrementa quando VERSION ainda é igual à última tag publicada.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      !contains(github.event.workflow_run.head_commit.message, 'chore: release v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Bump VERSION (patch, se ainda não tiver sido bumpada na mão) e cria a tag
+        id: bump
+        run: |
+          set -Eeuo pipefail
+          git config user.name "pvx-bot"
+          git config user.email "actions@github.com"
+
+          current=$(cat VERSION)
+          latest_tag=$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -1)
+          latest_tag=${latest_tag:-0.0.0}
+
+          if [[ "$current" == "$latest_tag" ]]; then
+            IFS='.' read -r major minor patch <<<"$current"
+            next="${major}.${minor}.$((patch + 1))"
+            echo "$next" >VERSION
+            git add VERSION
+            git commit -m "chore: release v${next}"
+            git push origin HEAD:main
+          else
+            next="$current"
+            echo "VERSION já bumpada manualmente pro commit que disparou o CI: ${next}"
+          fi
+
+          git tag "v${next}"
+          git push origin "v${next}"
+          echo "tag=v${next}" >>"$GITHUB_OUTPUT"
+
+      - name: Publica o GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/make-release.sh "${{ steps.bump.outputs.tag }}"
